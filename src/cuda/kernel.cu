@@ -9,6 +9,19 @@ __device__ static inline size_t cuda_idx(
     return x + ldy * y + z * ldz;
 }
 
+#ifndef THREAD_X
+#define THREAD_X 8
+#endif
+
+#ifndef THREAD_Y
+#define THREAD_Y 8
+#endif
+
+#ifndef THREAD_Z
+#define THREAD_Z 8
+#endif
+
+#define DESCR_COUNT 52
 
 #define CODE_IMPL
 #define CUDA_CODE
@@ -17,106 +30,121 @@ __device__ static inline size_t cuda_idx(
 #undef CODE_IMPL
 
 
+struct rtm_kernel_params {
+    // Spatial bounds & dimensions
+    size_t x_start, y_start, z_start;
+    size_t x_end, y_end, z_end;
+    size_t cube_width_x, cube_width_y, cube_width_z;
+    size_t stride_x, stride_y, stride_z;
 
-__global__ void rtm_cuda_kernel_impl(
-    // By-value arguments
-    const rtm_args_t args,
-    const size_t cube_width_x, const size_t cube_width_y, const size_t cube_width_z,
-    const size_t stride_x, const size_t stride_y, const size_t stride_z,
-    const FP dt, const FP dxxinv, const FP dyyinv, const FP dzzinv, const FP dxyinv, const FP dxzinv, const FP dyzinv, 
-// Pointers (abbreviated for readability, you must pass all of them)
-    const FP* ch1dxx, const FP* ch1dyy, const FP* ch1dzz, 
-    const FP* ch1dxy, const FP* ch1dyz, const FP* ch1dxz,
-    const FP* v2px, const FP* v2pz, const FP* v2sz, const FP* v2pn,
-    FP *const pwwrite,
-    const FP* pwcentralt1,
-    const FP* pwip0jp0km1,
-    const FP* pwip0jm1km1,
-    const FP* pwim1jp0km1,
-    const FP* pwip1jp0km1,
-    const FP* pwip0jp1km1,
-    const FP* pwim1jm1kp0,
-    const FP* pwip0jm1kp0,
-    const FP* pwip1jm1kp0,
-    const FP* pwim1jp0kp0,
-    const FP* pwip1jp0kp0,
-    const FP* pwim1jp1kp0,
-    const FP* pwip0jp1kp0,
-    const FP* pwip1jp1kp0,
-    const FP* pwip0jp0kp1,
-    const FP* pwip0jm1kp1,
-    const FP* pwim1jp0kp1,
-    const FP* pwip1jp0kp1,
-    const FP* pwip0jp1kp1,
-    const FP* pwcentralt2,
-    FP *const qwwrite,
-    const FP* qwcentralt1,
-    const FP* qwip0jp0km1,
-    const FP* qwip0jm1km1,
-    const FP* qwim1jp0km1,
-    const FP* qwip1jp0km1,
-    const FP* qwip0jp1km1,
-    const FP* qwim1jm1kp0,
-    const FP* qwip0jm1kp0,
-    const FP* qwip1jm1kp0,
-    const FP* qwim1jp0kp0,
-    const FP* qwip1jp0kp0,
-    const FP* qwim1jp1kp0,
-    const FP* qwip0jp1kp0,
-    const FP* qwip1jp1kp0,
-    const FP* qwip0jp0kp1,
-    const FP* qwip0jm1kp1,
-    const FP* qwim1jp0kp1,
-    const FP* qwip1jp0kp1,
-    const FP* qwip0jp1kp1,
-    const FP* qwcentralt2
-) {
+    // Finite difference coefficients
+    FP dt, dxxinv, dyyinv, dzzinv, dxyinv, dxzinv, dyzinv;
+
+    // Buffer pointers
+    FP* ptrs[DESCR_COUNT];
+};
+
+__global__ void rtm_cuda_kernel_impl(struct rtm_kernel_params p) {
+    #define ch1dxx 	(p.ptrs[0])
+    #define ch1dyy	(p.ptrs[1])
+    #define ch1dzz	(p.ptrs[2])
+    #define ch1dxy	(p.ptrs[3])
+    #define ch1dyz	(p.ptrs[4])
+    #define ch1dxz	(p.ptrs[5])
+    #define v2px	(p.ptrs[6])
+    #define v2pz	(p.ptrs[7])
+    #define v2sz  	(p.ptrs[8])
+    #define v2pn	(p.ptrs[9])
+    #define pwwrite 	(p.ptrs[10])
+    #define pwcentralt1 (p.ptrs[11])
+    #define pwip0jp0km1 (p.ptrs[12])
+    #define pwip0jm1km1 (p.ptrs[13])
+    #define pwim1jp0km1 (p.ptrs[14])
+    #define pwip1jp0km1 (p.ptrs[15])
+    #define pwip0jp1km1 (p.ptrs[16])
+    #define pwim1jm1kp0 (p.ptrs[17])
+    #define pwip0jm1kp0 (p.ptrs[18])
+    #define pwip1jm1kp0 (p.ptrs[19])
+    #define pwim1jp0kp0 (p.ptrs[20])
+    #define pwip1jp0kp0 (p.ptrs[21])
+    #define pwim1jp1kp0 (p.ptrs[22])
+    #define pwip0jp1kp0 (p.ptrs[23])
+    #define pwip1jp1kp0 (p.ptrs[24])
+    #define pwip0jp0kp1 (p.ptrs[25])
+    #define pwip0jm1kp1 (p.ptrs[26])
+    #define pwim1jp0kp1 (p.ptrs[27])
+    #define pwip1jp0kp1 (p.ptrs[28])
+    #define pwip0jp1kp1 (p.ptrs[29])
+    #define pwcentralt2 (p.ptrs[30])
+    #define qwwrite  	(p.ptrs[31])
+    #define qwcentralt1 (p.ptrs[32])
+    #define qwip0jp0km1 (p.ptrs[33])
+    #define qwip0jm1km1 (p.ptrs[34])
+    #define qwim1jp0km1 (p.ptrs[35])
+    #define qwip1jp0km1 (p.ptrs[36])
+    #define qwip0jp1km1 (p.ptrs[37])
+    #define qwim1jm1kp0 (p.ptrs[38])
+    #define qwip0jm1kp0 (p.ptrs[39])
+    #define qwip1jm1kp0 (p.ptrs[40])
+    #define qwim1jp0kp0 (p.ptrs[41])
+    #define qwip1jp0kp0 (p.ptrs[42])
+    #define qwim1jp1kp0 (p.ptrs[43])
+    #define qwip0jp1kp0 (p.ptrs[44])
+    #define qwip1jp1kp0 (p.ptrs[45])
+    #define qwip0jp0kp1 (p.ptrs[46])
+    #define qwip0jm1kp1 (p.ptrs[47])
+    #define qwim1jp0kp1 (p.ptrs[48])
+    #define qwip1jp0kp1 (p.ptrs[49])
+    #define qwip0jp1kp1 (p.ptrs[50])
+    #define qwcentralt2 (p.ptrs[51])
+
+
     // 1. Calculate thread's 3D coordinate
     const size_t x = blockIdx.x * blockDim.x + threadIdx.x;
     const size_t y = blockIdx.y * blockDim.y + threadIdx.y;
     const size_t z = blockIdx.z * blockDim.z + threadIdx.z;
 
     // 2. Bounds check against the total cube dimension
-    if (x >= cube_width_x || y >= cube_width_y || z >= cube_width_z) {
+    if (x >= p.cube_width_x || y >= p.cube_width_y || z >= p.cube_width_z) {
         return;
     }
 
-    const size_t idx = cuda_idx(x, y, z, stride_y, stride_z);
+    const size_t idx = cuda_idx(x, y, z, p.stride_y, p.stride_z);
 
     // 3. Apply the internal boundary logic from your original code
     if (
-        (z < args.z_start || z >= args.z_end) || 
-        (y < args.y_start || y >= args.y_end) || 
-        (x < args.x_start || x >= args.x_end)
+        (z < p.z_start || z >= p.z_end) || 
+        (y < p.y_start || y >= p.y_end) || 
+        (x < p.x_start || x >= p.x_end)
     ) {
         pwwrite[idx] = FP_LIT(0.0);
         qwwrite[idx] = FP_LIT(0.0);
         return;
     }
 
-    const FP pxx = snd_deriv_dir(pwcentralt1, pwim1jp0kp0, pwip1jp0kp0, x, idx, stride_x, dxxinv, cube_width_x);
-    const FP pyy = snd_deriv_dir(pwcentralt1, pwip0jm1kp0, pwip0jp1kp0, y, idx, stride_y, dyyinv, cube_width_y);
-    const FP pzz = snd_deriv_dir(pwcentralt1, pwip0jp0km1, pwip0jp0kp1, z, idx, stride_z, dzzinv, cube_width_z);
+    const FP pxx = snd_deriv_dir(pwcentralt1, pwim1jp0kp0, pwip1jp0kp0, x, idx, p.stride_x, p.dxxinv, p.cube_width_x);
+    const FP pyy = snd_deriv_dir(pwcentralt1, pwip0jm1kp0, pwip0jp1kp0, y, idx, p.stride_y, p.dyyinv, p.cube_width_y);
+    const FP pzz = snd_deriv_dir(pwcentralt1, pwip0jp0km1, pwip0jp0kp1, z, idx, p.stride_z, p.dzzinv, p.cube_width_z);
     const FP pxy = cross_deriv_ddir(
         pwcentralt1, idx, 
-        x, pwim1jp0kp0, pwip1jp0kp0, stride_x, 
-        y, pwip0jm1kp0, pwip0jp1kp0, stride_y, 
+        x, pwim1jp0kp0, pwip1jp0kp0, p.stride_x, 
+        y, pwip0jm1kp0, pwip0jp1kp0, p.stride_y, 
         pwip1jp1kp0, pwip1jm1kp0, pwim1jp1kp0, pwim1jm1kp0,
-        cube_width_x, dxyinv
+        p.cube_width_x, p.dxyinv
     ); 
     const FP pyz = cross_deriv_ddir(
         pwcentralt1, idx, 
-        y, pwip0jm1kp0, pwip0jp1kp0, stride_y, 
-        z, pwip0jp0km1, pwip0jp0kp1, stride_z, 
+        y, pwip0jm1kp0, pwip0jp1kp0, p.stride_y, 
+        z, pwip0jp0km1, pwip0jp0kp1, p.stride_z, 
         pwip0jp1kp1, pwip0jp1km1, pwip0jm1kp1, pwip0jm1km1,
-        cube_width_y, dyzinv
+        p.cube_width_y, p.dyzinv
     ); 
     const FP pxz = cross_deriv_ddir(
         pwcentralt1, idx, 
-        x, pwim1jp0kp0, pwip1jp0kp0, stride_x, 
-        z, pwip0jp0km1, pwip0jp0kp1, stride_z, 
+        x, pwim1jp0kp0, pwip1jp0kp0, p.stride_x, 
+        z, pwip0jp0km1, pwip0jp0kp1, p.stride_z, 
         pwip1jp0kp1, pwip1jp0km1, pwim1jp0kp1, pwim1jp0km1,
-        cube_width_x, dxzinv
+        p.cube_width_x, p.dxzinv
     ); 
 
     const FP cpxx = ch1dxx[idx] * pxx;
@@ -129,29 +157,29 @@ __global__ void rtm_cuda_kernel_impl(
     const FP h2p = pxx + pyy + pzz - h1p;
 
     // q derivatives, H1(q) and H2(q)
-    const FP qxx = snd_deriv_dir(qwcentralt1, qwim1jp0kp0, qwip1jp0kp0, x, idx, stride_x, dxxinv, cube_width_x);
-    const FP qyy = snd_deriv_dir(qwcentralt1, qwip0jm1kp0, qwip0jp1kp0, y, idx, stride_y, dyyinv, cube_width_y);
-    const FP qzz = snd_deriv_dir(qwcentralt1, qwip0jp0km1, qwip0jp0kp1, z, idx, stride_z, dzzinv, cube_width_z);
+    const FP qxx = snd_deriv_dir(qwcentralt1, qwim1jp0kp0, qwip1jp0kp0, x, idx, p.stride_x, p.dxxinv, p.cube_width_x);
+    const FP qyy = snd_deriv_dir(qwcentralt1, qwip0jm1kp0, qwip0jp1kp0, y, idx, p.stride_y, p.dyyinv, p.cube_width_y);
+    const FP qzz = snd_deriv_dir(qwcentralt1, qwip0jp0km1, qwip0jp0kp1, z, idx, p.stride_z, p.dzzinv, p.cube_width_z);
     const FP qxy = cross_deriv_ddir(
         qwcentralt1, idx, 
-        x, qwim1jp0kp0, qwip1jp0kp0, stride_x, 
-        y, qwip0jm1kp0, qwip0jp1kp0, stride_y, 
+        x, qwim1jp0kp0, qwip1jp0kp0, p.stride_x, 
+        y, qwip0jm1kp0, qwip0jp1kp0, p.stride_y, 
         qwip1jp1kp0, qwip1jm1kp0, qwim1jp1kp0, qwim1jm1kp0,
-        cube_width_x, dxyinv
+        p.cube_width_x, p.dxyinv
     ); 
     const FP qyz = cross_deriv_ddir(
         qwcentralt1, idx, 
-        y, qwip0jm1kp0, qwip0jp1kp0, stride_y, 
-        z, qwip0jp0km1, qwip0jp0kp1, stride_z, 
+        y, qwip0jm1kp0, qwip0jp1kp0, p.stride_y, 
+        z, qwip0jp0km1, qwip0jp0kp1, p.stride_z, 
         qwip0jp1kp1, qwip0jp1km1, qwip0jm1kp1, qwip0jm1km1,
-        cube_width_y, dyzinv
+        p.cube_width_y, p.dyzinv
     ); 
     const FP qxz = cross_deriv_ddir(
         qwcentralt1, idx, 
-        x, qwim1jp0kp0, qwip1jp0kp0, stride_x, 
-        z, qwip0jp0km1, qwip0jp0kp1, stride_z, 
+        x, qwim1jp0kp0, qwip1jp0kp0, p.stride_x, 
+        z, qwip0jp0km1, qwip0jp0kp1, p.stride_z, 
         qwip1jp0kp1, qwip1jp0km1, qwim1jp0kp1, qwim1jp0km1,
-        cube_width_x, dxzinv
+        p.cube_width_x, p.dxzinv
     ); 
 
     const FP cqxx = ch1dxx[idx] * qxx;
@@ -172,13 +200,13 @@ __global__ void rtm_cuda_kernel_impl(
     const FP rhsq = v2pn[idx] * h2p + v2pz[idx] * h1q - v2sz[idx] * h2pmq;
 
     // new p and q
-    pwwrite[idx] = FP_LIT(2.0) * pwcentralt1[idx] - pwcentralt2[idx] + rhsp * dt * dt;
-    qwwrite[idx] = FP_LIT(2.0) * qwcentralt1[idx] - qwcentralt2[idx] + rhsq * dt * dt;
+    pwwrite[idx] = FP_LIT(2.0) * pwcentralt1[idx] - pwcentralt2[idx] + rhsp * p.dt * p.dt;
+    qwwrite[idx] = FP_LIT(2.0) * qwcentralt1[idx] - qwcentralt2[idx] + rhsq * p.dt * p.dt;
 }
 
 
-extern "C" void rtm_kernel_cuda(void *descr[], void *cl_args) {
 
+extern "C" void rtm_kernel_cuda(void *descr[], void *cl_args) {
     const rtm_args_t* args = (rtm_args_t*) cl_args;
 
     const FP dx = args->dx;
@@ -201,114 +229,21 @@ extern "C" void rtm_kernel_cuda(void *descr[], void *cl_args) {
     const size_t stride_y = STARPU_BLOCK_GET_LDY(descr[0]);
     const size_t stride_z = STARPU_BLOCK_GET_LDZ(descr[0]);
 
+    struct rtm_kernel_params params = {
+	.x_start = args->x_start, .y_start = args->y_start, .z_start = args->z_start,
+	.x_end = args->x_end, .y_end = args->y_end, .z_end = args->z_end,
+	.cube_width_x = cube_width_x, .cube_width_y = cube_width_y, .cube_width_z = cube_width_z,
+	.stride_x = stride_x, .stride_y = stride_y, .stride_z = stride_z, .dt = dt,
+	.dxxinv = dxxinv, .dyyinv = dyyinv, .dzzinv = dzzinv,
+	.dxyinv = dxyinv, .dxzinv = dxzinv, .dyzinv = dyzinv 
+    };
 
-    // precomputed values
-    const FP* ch1dxx = (FP*) STARPU_BLOCK_GET_PTR(descr[0]);
-    const FP* ch1dyy = (FP*) STARPU_BLOCK_GET_PTR(descr[1]);
-    const FP* ch1dzz = (FP*) STARPU_BLOCK_GET_PTR(descr[2]);
-    const FP* ch1dxy = (FP*) STARPU_BLOCK_GET_PTR(descr[3]);
-    const FP* ch1dyz = (FP*) STARPU_BLOCK_GET_PTR(descr[4]);
-    const FP* ch1dxz = (FP*) STARPU_BLOCK_GET_PTR(descr[5]);
-    const FP* v2px = (FP*) STARPU_BLOCK_GET_PTR(descr[6]);
-    const FP* v2pz = (FP*) STARPU_BLOCK_GET_PTR(descr[7]);
-    const FP* v2sz = (FP*) STARPU_BLOCK_GET_PTR(descr[8]);
-    const FP* v2pn = (FP*) STARPU_BLOCK_GET_PTR(descr[9]);
+    // pass only the pointer to the struct
+    for(size_t i = 0; i < DESCR_COUNT; i++){
+	params.ptrs[i] = (FP*) STARPU_BLOCK_GET_PTR(descr[i]);
+    } 
 
-    // w at (i, j, k) of t[0]
-    FP *const pwwrite = (FP*) STARPU_BLOCK_GET_PTR(descr[10]);
-    // primary wave
-    // STARPU_R, // r at (i, j, k) of t[1]
-    const FP* pwcentralt1 = (FP*) STARPU_BLOCK_GET_PTR(descr[11]);
-    // // layer when k - 1
-    // // o x o
-    // // x x x 
-    // // o x o
-    // STARPU_R, // r at (i + 0, j + 0, k - 1) of t[1]
-    // STARPU_R, // r at (i + 0, j - 1, k - 1) of t[1]
-    // STARPU_R, // r at (i - 1, j + 0, k - 1) of t[1]
-    // STARPU_R, // r at (i + 1, j + 0, k - 1) of t[1]
-    // STARPU_R, // r at (i + 0, j + 1, k - 1) of t[1]
-    // nomenclatura de variável é:
-    // pw (onda primária do bloco)  ip0 (i + 0)  jp0 (j + 0)  km1 (k - 1), em relação ao central
-    const FP* pwip0jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[12]);
-    const FP* pwip0jm1km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[13]);
-    const FP* pwim1jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[14]);
-    const FP* pwip1jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[15]);
-    const FP* pwip0jp1km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[16]);
-
-    // // layer when k
-    // // x x x
-    // // x o x 
-    // // x x x
-    // STARPU_R, // r at (i - 1, j - 1, k + 0) of t[1]
-    // STARPU_R, // r at (i + 0, j - 1, k + 0) of t[1]
-    // STARPU_R, // r at (i + 1, j - 1, k + 0) of t[1]
-    // STARPU_R, // r at (i - 1, j + 0, k + 0) of t[1]
-    // STARPU_R, // r at (i + 1, j + 0, k + 0) of t[1]
-    // STARPU_R, // r at (i - 1, j + 1, k + 0) of t[1]
-    // STARPU_R, // r at (i + 0, j + 1, k + 0) of t[1]
-    // STARPU_R, // r at (i + 1, j + 1, k + 0) of t[1]
-    const FP* pwim1jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[17]);
-    const FP* pwip0jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[18]);
-    const FP* pwip1jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[19]);
-    const FP* pwim1jp0kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[20]);
-    const FP* pwip1jp0kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[21]);
-    const FP* pwim1jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[22]);
-    const FP* pwip0jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[23]);
-    const FP* pwip1jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[24]);
-
-    // // layer when k + 1
-    // // o x o
-    // // x x x 
-    // // o x o
-    // STARPU_R, // r at (i + 0, j + 0, k + 1) of t[1]
-    // STARPU_R, // r at (i + 0, j - 1, k + 1) of t[1]
-    // STARPU_R, // r at (i - 1, j + 0, k + 1) of t[1]
-    // STARPU_R, // r at (i + 1, j + 0, k + 1) of t[1]
-    // STARPU_R, // r at (i + 0, j + 1, k + 1) of t[1]
-    const FP* pwip0jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[25]);
-    const FP* pwip0jm1kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[26]);
-    const FP* pwim1jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[27]);
-    const FP* pwip1jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[28]);
-    const FP* pwip0jp1kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[29]);
-
-    // STARPU_R  // r at (i, j, k) of t[2]
-    const FP* pwcentralt2 = (FP*) STARPU_BLOCK_GET_PTR(descr[30]);
-
-    // secondary wave
-    FP *const qwwrite = (FP*) STARPU_BLOCK_GET_PTR(descr[31]);
-
-    const FP* qwcentralt1 = (FP*) STARPU_BLOCK_GET_PTR(descr[32]);
-
-    // layer when k - 1
-    const FP* qwip0jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[33]);
-    const FP* qwip0jm1km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[34]);
-    const FP* qwim1jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[35]);
-    const FP* qwip1jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[36]);
-    const FP* qwip0jp1km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[37]);
-
-    // layer when k
-    const FP* qwim1jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[38]);
-    const FP* qwip0jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[39]);
-    const FP* qwip1jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[40]);
-    const FP* qwim1jp0kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[41]);
-    const FP* qwip1jp0kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[42]);
-    const FP* qwim1jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[43]);
-    const FP* qwip0jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[44]);
-    const FP* qwip1jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[45]);
-
-    // layer when k + 1
-    const FP* qwip0jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[46]);
-    const FP* qwip0jm1kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[47]);
-    const FP* qwim1jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[48]);
-    const FP* qwip1jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[49]);
-    const FP* qwip0jp1kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[50]);
-
-    const FP* qwcentralt2 = (FP*) STARPU_BLOCK_GET_PTR(descr[51]);
-
-    // Define CUDA Grid and Block Dimensions
-    // A 3D block of 8x8x8 is 512 threads, which is a standard starting point for 3D stencils.
-    dim3 threads_per_block(8, 8, 8); 
+    dim3 threads_per_block(THREAD_X, THREAD_Y, THREAD_Z); 
     dim3 num_blocks(
         (cube_width_x + threads_per_block.x - 1) / threads_per_block.x,
         (cube_width_y + threads_per_block.y - 1) / threads_per_block.y,
@@ -316,56 +251,7 @@ extern "C" void rtm_kernel_cuda(void *descr[], void *cl_args) {
     );
 
     // Launch the kernel asynchronously on StarPU's managed stream
-    rtm_cuda_kernel_impl<<<num_blocks, threads_per_block, 0, starpu_cuda_get_local_stream()>>>(
-        *args, // Dereference to pass struct by value
-        cube_width_x, cube_width_y, cube_width_z,
-        stride_x, stride_y, stride_z,
-        dt, dxxinv, dyyinv, dzzinv, dxyinv, dxzinv, dyzinv,
-        ch1dxx, ch1dyy, ch1dzz, ch1dxy, ch1dyz, ch1dxz,
-        v2px, v2pz, v2sz, v2pn,
-        pwwrite,
-        pwcentralt1,
-        pwip0jp0km1,
-        pwip0jm1km1,
-        pwim1jp0km1,
-        pwip1jp0km1,
-        pwip0jp1km1,
-        pwim1jm1kp0,
-        pwip0jm1kp0,
-        pwip1jm1kp0,
-        pwim1jp0kp0,
-        pwip1jp0kp0,
-        pwim1jp1kp0,
-        pwip0jp1kp0,
-        pwip1jp1kp0,
-        pwip0jp0kp1,
-        pwip0jm1kp1,
-        pwim1jp0kp1,
-        pwip1jp0kp1,
-        pwip0jp1kp1,
-        pwcentralt2,
-        qwwrite,
-        qwcentralt1,
-        qwip0jp0km1,
-        qwip0jm1km1,
-        qwim1jp0km1,
-        qwip1jp0km1,
-        qwip0jp1km1,
-        qwim1jm1kp0,
-        qwip0jm1kp0,
-        qwip1jm1kp0,
-        qwim1jp0kp0,
-        qwip1jp0kp0,
-        qwim1jp1kp0,
-        qwip0jp1kp0,
-        qwip1jp1kp0,
-        qwip0jp0kp1,
-        qwip0jm1kp1,
-        qwim1jp0kp1,
-        qwip1jp0kp1,
-        qwip0jp1kp1,
-        qwcentralt2
-    );
+    rtm_cuda_kernel_impl<<<num_blocks, threads_per_block, 0, starpu_cuda_get_local_stream()>>>(params);
 
     // Standard error checking
     cudaError_t status = cudaGetLastError();
