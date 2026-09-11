@@ -18,12 +18,13 @@
 
         # gets the proper version of the CUDA packages for compilation
         cudaNixpkgs.url = "github:nixos/nixpkgs/1da52dd49a127ad74486b135898da2cef8c62665";
-        madagascar.url = "github:Sacolle/nix-madagascar";
+        #madagascar.url = "github:Sacolle/nix-madagascar";
+        flake-utils.url = "github:numtide/flake-utils";
     };
 
-    outputs = { self, nixpkgs, cudaNixpkgs, StarPU, eztrace, madagascar, nix-gl-host }: 
+    outputs = { self, nixpkgs, cudaNixpkgs, StarPU, eztrace, /* madagascar,*/ nix-gl-host, flake-utils }: 
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
     let 
-        system = "x86_64-linux";
         pkgsconfigs = { 
             inherit system; 
             config.allowUnfree = true;
@@ -57,8 +58,7 @@
                 python313
                 python313Packages.numpy
 
-                #madagascar
-                madagascar.packages.${system}.default
+                #madagascar.packages.${system}.default
             ] ++ (with cudapkgs.cudaPackages; [ 
                 cuda_nvcc
                 cuda_cudart
@@ -124,9 +124,16 @@
         };
 
         nixglhost = nix-gl-host.defaultPackage.${system};
+
+        kernel-test = pkgs.callPackage ./tests/kernel-opt/kernel-test.nix {
+	    root = self;
+            compileAsRelease = true;
+            stdenv = cudapkgs.gcc12Stdenv;
+            cudaPackages = cudaPacks;
+        };
     in
     {
-        devShells.${system} = {
+        devShells = {
           default = baseShell starpu-cuda {};
           no-cuda = baseShell (StarPU.packages.${system}.default.override {
             	enableCUDA = false;
@@ -134,6 +141,7 @@
 	            enableTrace = false;
             	maxBuffers = 56;
 	        }) {};
+            /*
           eztrace-test = pkgs.mkShell {
                 buildInputs = [
                     (eztrace.packages.${system}.new-starpu.override {
@@ -155,7 +163,7 @@
                     pkgs.python313
                     pkgs.gdb
                 ];
-            };
+            };*/
             cuda-test = pkgs.mkShell.override { stdenv = cudapkgs.gcc12Stdenv; } {
                 buildInputs = [ 
                     pkgs.python313
@@ -167,6 +175,7 @@
                     #pkgs.gdb
                     nixglhost 
                     cudaPacks.cuda_cuobjdump
+		    pkgs.cudaPackages_13.nsight_compute
                 ] ++ (with cudaPacks; [
                     cuda_nvcc
                 ]);
@@ -175,7 +184,6 @@
                 buildInputs = [ 
                     star-fletcher-cuda		
                     nixglhost 
-                    cudaPacks.cuda_cuobjdump
                 ];
             };
 
@@ -185,10 +193,16 @@
                     nixglhost 
                 ];
             };
+            kernel-test-grace = pkgs.mkShell {
+                buildInputs = [ 
+                    nixglhost 
+		    (kernel-test.overrideAttrs { doCheck = false; })
+                ];
+            };
         };
-        packages.${system} = {
+        packages = {
           default = star-fletcher;
-          inherit star-fletcher star-fletcher-cuda star-fletcher-cuda-no-cpu-kernel star-fletcher-cuda-trace;
+          inherit star-fletcher star-fletcher-cuda star-fletcher-cuda-no-cpu-kernel star-fletcher-cuda-trace kernel-test;
         };
-    };
+    });
 }
