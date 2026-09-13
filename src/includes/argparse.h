@@ -22,7 +22,7 @@ bool has_envvar(const char* key);
 err_t i64_get_envvar(int64_t* out, const char* key);
 
 // get the environment variable key, and returns the value as a size_t
-err_t size_t_get_envvar(size_t* out, const char* key){
+err_t size_t_get_envvar(size_t* out, const char* key);
 
 // get the environment variable key, and returns the value as a string
 // does not modify out on err

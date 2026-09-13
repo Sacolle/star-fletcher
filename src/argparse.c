@@ -10,6 +10,10 @@
 
 #include "argparse.h"
 
+bool is_neg(char* str){
+	return *str == '-';
+}
+
 bool has_envvar(const char* key){
     return getenv(key) != NULL;
 }
@@ -47,7 +51,7 @@ err_t size_t_get_envvar(size_t* out, const char* key){
     char *rest;
     errno = 0;
 
-    if(is_neg(argv[i])) { 
+    if(is_neg(env_out)) { 
         return ME_OVERFLOW_CONVERT;
     }
 
@@ -100,10 +104,6 @@ err_t str_to_enum(const char* word, int* outp_res, int count, ...){
 	}
 	va_end(valist);
 	return err;
-}
-
-bool is_neg(char* str){
-	return *str == '-';
 }
 
 err_t read_args(int* argc, char** argv, int count, ...){
@@ -188,3 +188,4 @@ err_t read_args(int* argc, char** argv, int count, ...){
 	va_end(valist);
 	return err;
 }
+
