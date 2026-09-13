@@ -9,17 +9,7 @@ __device__ static inline size_t cuda_idx(
     return x + ldy * y + z * ldz;
 }
 
-#ifndef THREAD_X
-#define THREAD_X 8
-#endif
-
-#ifndef THREAD_Y
-#define THREAD_Y 8
-#endif
-
-#ifndef THREAD_Z
-#define THREAD_Z 8
-#endif
+extern size_t g_cuda_thread_x, g_cuda_thread_y, g_cuda_thread_z;
 
 #define DESCR_COUNT 52
 
@@ -243,7 +233,7 @@ extern "C" void rtm_kernel_cuda(void *descr[], void *cl_args) {
 	params.ptrs[i] = (FP*) STARPU_BLOCK_GET_PTR(descr[i]);
     } 
 
-    dim3 threads_per_block(THREAD_X, THREAD_Y, THREAD_Z); 
+    dim3 threads_per_block(g_cuda_thread_x, g_cuda_thread_y, g_cuda_thread_z); 
     dim3 num_blocks(
         (cube_width_x + threads_per_block.x - 1) / threads_per_block.x,
         (cube_width_y + threads_per_block.y - 1) / threads_per_block.y,

@@ -21,6 +21,9 @@ bool has_envvar(const char* key);
 // get the environment variable key, and returns the value as a int64_t
 err_t i64_get_envvar(int64_t* out, const char* key);
 
+// get the environment variable key, and returns the value as a size_t
+err_t size_t_get_envvar(size_t* out, const char* key){
+
 // get the environment variable key, and returns the value as a string
 // does not modify out on err
 err_t str_get_envvar(char** out, const char* key);
@@ -32,6 +35,7 @@ err_t str_get_envvar(char** out, const char* key);
 // does not modify `output` on error
 #define get_envvar(output, key) _Generic((output), \
     int64_t* : i64_get_envvar, \
+    size_t* : size_t_get_envvar, \
     char** : str_get_envvar, \
     default: str_get_envvar \
 )(output, key)

@@ -39,6 +39,40 @@ err_t i64_get_envvar(int64_t* out, const char* key){
     return 0;
 }
 
+err_t size_t_get_envvar(size_t* out, const char* key){
+    char* env_out = getenv(key);
+    if(env_out == NULL){
+      return ME_MISSING_ENVVAR;
+    }
+    char *rest;
+    errno = 0;
+
+    if(is_neg(argv[i])) { 
+        return ME_OVERFLOW_CONVERT;
+    }
+
+    #if SIZE_MAX == UINT64_MAX
+    size_t ret = strtoull(env_out, &rest, 10);
+    #else 
+    size_t ret = strtoul(env_out, &rest, 10);
+    #endif
+
+    int err = errno;
+    if(err) {
+      return err;
+    }
+    if(rest == key){
+      // String vazia de entrada
+      return ME_IMPROPER_INPUT;
+    }
+    if(*rest != '\0'){ 
+      // há mais caracteres que não foram parseados
+      return ME_INCOMPLETE_PARSE;
+    };
+    *out = ret;
+    return 0;
+}
+
 err_t str_get_envvar(char** out, const char* key){
     char* env_out = getenv(key);
     if(env_out == NULL){

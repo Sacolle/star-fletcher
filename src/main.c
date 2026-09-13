@@ -41,6 +41,8 @@ const size_t BORDER_WIDTH = 4;
 
 FP g_dt_output = FP_LIT(0.01);
 
+size_t g_cuda_thread_x = 8, g_cuda_thread_y = 8, g_cuda_thread_z = 8;
+
 // passes the iter[0] to iter[1], iter[1] to iter[2] and iter[2] to iter[0]
 static inline void rotate_for_next_iter(starpu_data_handle_t* iter[3]){
     starpu_data_handle_t* tmp = iter[2]; 
@@ -324,6 +326,10 @@ int main(int argc, char **argv){
 
     int64_t enable_io = 1;
     get_envvar(&enable_io, "ENABLE_IO");
+
+    get_envvar(&g_cuda_thread_x, "CUDA_THREAD_X");
+    get_envvar(&g_cuda_thread_y, "CUDA_THREAD_Y");
+    get_envvar(&g_cuda_thread_z, "CUDA_THREAD_Z");
 
     enum Form form = 0;
     char* form_str = NULL;

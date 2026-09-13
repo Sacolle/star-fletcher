@@ -47,21 +47,6 @@ ifeq ($(CUDA_BACKEND), 1)
     else
 	    NVCCFLAGS += -O0 -g
     endif
-
-    ifdef CUDA_THREAD_CONFIG
-    THREAD_PARTS := $(subst -, ,$(CUDA_THREAD_CONFIG))
-
-    ifneq ($(words $(THREAD_PARTS)),3)
-    $(error CUDA_THREAD_CONFIG must be X-Y-Z, got '$(CUDA_THREAD_CONFIG)')
-    endif
-
-    CUDA_THREAD_DEFINES := \
-	    -DTHREAD_X=$(word 1,$(THREAD_PARTS)) \
-	    -DTHREAD_Y=$(word 2,$(THREAD_PARTS)) \
-	    -DTHREAD_Z=$(word 3,$(THREAD_PARTS))
-
-    NVCCFLAGS += $(CUDA_THREAD_DEFINES)
-    endif
 endif
 
 ARGS = TTI 200 200 200 8 12.5 12.5 12.5 0.0001 0.001 4 0.0005
