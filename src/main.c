@@ -277,17 +277,32 @@ err_t write_wave(int64_t* n_out, starpu_data_handle_t* wave_iter){
 }
 
 
+// if x fails (!= 0), goto the end of main and log status;
+#define TRY(x, ...)							\
+  do {									\
+    err_t err_try;							\
+    TRYTO(err_try = (x), program_status = EXIT_FAILURE;			\
+        printf("[error] Failed at line %d with error %ld: %s\n", __LINE__, \
+               err_try, err_name(err_try));				\
+        printf("[err-msg] " __VA_ARGS__);, program_end)			\
+} while(0)
+
+// if x fails (!= 0) emits a message, but
+// keeps the executions as is
+#define CHECK(x, ...)                                                          \
+  do {                                                                         \
+    err_t err_check = x;                                                       \
+    if (err_check != 0) {                                                      \
+      printf("[warnign] Check at line %d detected error %ld: %s\n", __LINE__,  \
+             err_check, err_name(err_check));				\
+      printf("[warning-msg] " __VA_ARGS__);			\
+	}								\
+} while(0)
+
+
 #ifdef RELEASE
-// if x fails (!= 0), exit the program;
-#define TRY(x,...) TRYTO(x, program_status = EXIT_FAILURE, program_end)
 #define DEBUG(...) 
 #else
-// if x fails (!= 0), goto the end of main and log status;
-err_t g_err;
-#define TRY(x,...) TRYTO(g_err = (x), program_status = EXIT_FAILURE; \
-    printf("[error] Failed at line %d with error %ld: %s\n", __LINE__, g_err, err_name(g_err)); \
-    printf("[err-msg] " __VA_ARGS__);, program_end)
-
 #define DEBUG(...) printf("[debug] " __VA_ARGS__)
 #endif
 
@@ -307,6 +322,13 @@ int main(int argc, char **argv){
 
 #ifdef CUDA_BACKEND
     printf("Using CUDA backend.\n");
+
+    CHECK(get_envvar(&g_cuda_thread_x, "CUDA_THREAD_X"),
+            "Not setting CUDA_THREAD_X, using default: %ld\n", g_cuda_thread_x);
+    CHECK(get_envvar(&g_cuda_thread_y, "CUDA_THREAD_Y"),
+            "Not setting CUDA_THREAD_Y, using default: %ld\n", g_cuda_thread_y);
+    CHECK(get_envvar(&g_cuda_thread_z, "CUDA_THREAD_Z"),
+            "Not setting CUDA_THREAD_Z, using default: %ld\n", g_cuda_thread_z);
 #else
     printf("Not using CUDA.\n");
 #endif
@@ -319,17 +341,15 @@ int main(int argc, char **argv){
     
 
     char* output_folder = DEFAULT_OUTPUT_FOLDER;
-    get_envvar(&output_folder, "OUTPUT_FOLDER");
+    CHECK(get_envvar(&output_folder, "OUTPUT_FOLDER"), 
+            "Not setting a folder, using default: %s\n", DEFAULT_OUTPUT_FOLDER);
 
     char* output_filename = DEFAULT_OUTPUT_NAME;
-    get_envvar(&output_filename, "OUTPUT_FILE");
+    CHECK(get_envvar(&output_filename, "OUTPUT_FILE"),
+            "Not setting a filename, using default: %s\n", DEFAULT_OUTPUT_NAME);
 
     int64_t enable_io = 1;
-    get_envvar(&enable_io, "ENABLE_IO");
-
-    get_envvar(&g_cuda_thread_x, "CUDA_THREAD_X");
-    get_envvar(&g_cuda_thread_y, "CUDA_THREAD_Y");
-    get_envvar(&g_cuda_thread_z, "CUDA_THREAD_Z");
+    CHECK(get_envvar(&enable_io, "ENABLE_IO"), "By default, using IO.\n");
 
     enum Form form = 0;
     char* form_str = NULL;
