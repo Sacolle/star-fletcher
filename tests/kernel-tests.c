@@ -246,6 +246,28 @@ TestSuite(fletcher_kernel, .init = build_matricies, .fini = teardown_values);
     .nx = g_cube_width, .ny = g_cube_width, .nz = g_cube_width, \
     .ldy = g_cube_width, .ldz = g_cube_width * g_cube_width, .elemsize = sizeof(FP)})
 
+// Face/edge slice of the neighbor segment at offset (dx, dy, dz) of segment (i, j, k), as
+// g_cube_face_filter builds it: STENCIL_RADIUS thick on the offset axes, facing (i, j, k),
+// in place with the parent's strides.
+static struct starpu_block_interface neighbor_face_block(FP** segments, size_t i, size_t j, size_t k, int dx, int dy, int dz){
+    const size_t w = g_cube_width;
+    const FP* segment = segments[block_idx(i + dx, j + dy, k + dz)];
+
+    // the low neighbor gives its high face, the high neighbor its low face
+    const size_t start_x = dx < 0 ? w - STENCIL_RADIUS : 0;
+    const size_t start_y = dy < 0 ? w - STENCIL_RADIUS : 0;
+    const size_t start_z = dz < 0 ? w - STENCIL_RADIUS : 0;
+
+    return (struct starpu_block_interface) {
+        .id = STARPU_BLOCK_INTERFACE_ID,
+        .ptr = (uintptr_t) (segment + start_x + start_y * w + start_z * w * w),
+        .nx = dx != 0 ? STENCIL_RADIUS : w,
+        .ny = dy != 0 ? STENCIL_RADIUS : w,
+        .nz = dz != 0 ? STENCIL_RADIUS : w,
+        .ldy = w, .ldz = w * w, .elemsize = sizeof(FP)
+    };
+}
+
 void build_handles(struct starpu_block_interface handles[52], size_t i, size_t j, size_t k){
     const size_t idx = block_idx(i, j, k);
 
@@ -266,26 +288,26 @@ void build_handles(struct starpu_block_interface handles[52], size_t i, size_t j
 
     handles[11] = ASBLK(g_segment_matrix_p[1][idx]); //central block when t - 1
 
-    handles[12] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 0, k - 1)]);
-    handles[13] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j - 1, k - 1)]);
-    handles[14] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j + 0, k - 1)]);
-    handles[15] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j + 0, k - 1)]);
-    handles[16] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 1, k - 1)]);
+    handles[12] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +0, +0, -1);
+    handles[13] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +0, -1, -1);
+    handles[14] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, -1, +0, -1);
+    handles[15] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +1, +0, -1);
+    handles[16] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +0, +1, -1);
 
-    handles[17] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j - 1, k + 0)]);
-    handles[18] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j - 1, k + 0)]);
-    handles[19] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j - 1, k + 0)]);
-    handles[20] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j + 0, k + 0)]);
-    handles[21] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j + 0, k + 0)]);
-    handles[22] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j + 1, k + 0)]);
-    handles[23] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 1, k + 0)]);
-    handles[24] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j + 1, k + 0)]);
+    handles[17] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, -1, -1, +0);
+    handles[18] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +0, -1, +0);
+    handles[19] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +1, -1, +0);
+    handles[20] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, -1, +0, +0);
+    handles[21] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +1, +0, +0);
+    handles[22] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, -1, +1, +0);
+    handles[23] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +0, +1, +0);
+    handles[24] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +1, +1, +0);
 
-    handles[25] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 0, k + 1)]);
-    handles[26] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j - 1, k + 1)]);
-    handles[27] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j + 0, k + 1)]);
-    handles[28] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j + 0, k + 1)]);
-    handles[29] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 1, k + 1)]);
+    handles[25] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +0, +0, +1);
+    handles[26] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +0, -1, +1);
+    handles[27] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, -1, +0, +1);
+    handles[28] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +1, +0, +1);
+    handles[29] = neighbor_face_block(g_segment_matrix_p[1], i, j, k, +0, +1, +1);
 
     handles[30] = ASBLK(g_segment_matrix_p[2][idx]); //central block when t - 2
 
@@ -294,26 +316,26 @@ void build_handles(struct starpu_block_interface handles[52], size_t i, size_t j
 
     handles[32] = ASBLK(g_segment_matrix_q[1][idx]); //central block when t - 1
 
-    handles[33] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 0, k - 1)]);
-    handles[34] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j - 1, k - 1)]);
-    handles[35] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j + 0, k - 1)]);
-    handles[36] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j + 0, k - 1)]);
-    handles[37] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 1, k - 1)]);
+    handles[33] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +0, +0, -1);
+    handles[34] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +0, -1, -1);
+    handles[35] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, -1, +0, -1);
+    handles[36] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +1, +0, -1);
+    handles[37] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +0, +1, -1);
 
-    handles[38] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j - 1, k + 0)]);
-    handles[39] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j - 1, k + 0)]);
-    handles[40] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j - 1, k + 0)]);
-    handles[41] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j + 0, k + 0)]);
-    handles[42] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j + 0, k + 0)]);
-    handles[43] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j + 1, k + 0)]);
-    handles[44] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 1, k + 0)]);
-    handles[45] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j + 1, k + 0)]);
+    handles[38] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, -1, -1, +0);
+    handles[39] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +0, -1, +0);
+    handles[40] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +1, -1, +0);
+    handles[41] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, -1, +0, +0);
+    handles[42] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +1, +0, +0);
+    handles[43] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, -1, +1, +0);
+    handles[44] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +0, +1, +0);
+    handles[45] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +1, +1, +0);
 
-    handles[46] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 0, k + 1)]);
-    handles[47] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j - 1, k + 1)]);
-    handles[48] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j + 0, k + 1)]);
-    handles[49] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j + 0, k + 1)]);
-    handles[50] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 1, k + 1)]);
+    handles[46] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +0, +0, +1);
+    handles[47] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +0, -1, +1);
+    handles[48] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, -1, +0, +1);
+    handles[49] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +1, +0, +1);
+    handles[50] = neighbor_face_block(g_segment_matrix_q[1], i, j, k, +0, +1, +1);
 
     handles[51] = ASBLK(g_segment_matrix_q[2][idx]); //central block when t - 2
 }

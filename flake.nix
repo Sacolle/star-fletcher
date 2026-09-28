@@ -18,11 +18,11 @@
 
         # gets the proper version of the CUDA packages for compilation
         cudaNixpkgs.url = "github:nixos/nixpkgs/1da52dd49a127ad74486b135898da2cef8c62665";
-        #madagascar.url = "github:Sacolle/nix-madagascar";
+        madagascar.url = "github:Sacolle/nix-madagascar";
         flake-utils.url = "github:numtide/flake-utils";
     };
 
-    outputs = { self, nixpkgs, cudaNixpkgs, StarPU, eztrace, /* madagascar,*/ nix-gl-host, flake-utils }: 
+    outputs = { self, nixpkgs, cudaNixpkgs, StarPU, eztrace,  madagascar, nix-gl-host, flake-utils }: 
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
     let 
         pkgsconfigs = { 
@@ -58,7 +58,7 @@
                 python313
                 python313Packages.numpy
 
-                #madagascar.packages.${system}.default
+                madagascar.packages.${system}.default
             ] ++ (with cudapkgs.cudaPackages; [ 
                 cuda_nvcc
                 cuda_cudart
@@ -123,6 +123,15 @@
             stdenv = cudapkgs.gcc12Stdenv;
         };
 
+        star-fletcher-cpu-lattest = pkgs.callPackage ./star-fletcher.nix {
+            cudaPackages = cudaPacks;
+            enableCUDA = true;
+            enableTrace = false;
+            disableCPUKernel = true;
+            compileAsRelease = true;
+            stdenv = cudapkgs.gcc12Stdenv;
+        };
+
         nixglhost = nix-gl-host.defaultPackage.${system};
 
         kernel-test = pkgs.callPackage ./tests/kernel-opt/kernel-test.nix {
@@ -141,6 +150,22 @@
 	            enableTrace = false;
             	maxBuffers = 56;
 	        }) {};
+          no-cuda-lattest = baseShell ((StarPU.packages.${system}.default.override {
+            	enableCUDA = false;
+	            compileAsRelease = true;
+	            enableTrace = false;
+            	maxBuffers = 56;
+                stdenv = pkgs.gcc13Stdenv;
+	        }).overrideAttrs {
+                version = "latest";
+                src = pkgs.fetchFromGitLab {
+                    domain = "gitlab.inria.fr";
+                    owner = "starpu";
+                    repo = "starpu";
+                    rev = "3b258cb620de7610f0b6fadaae959f1e173f0e34";
+                    hash = "sha256-p/5u0tGrVo3nUtcmfrYMIyinB4SpR3aT3+S6ztRzbbc=";
+                };
+            }) {};
             /*
           eztrace-test = pkgs.mkShell {
                 buildInputs = [

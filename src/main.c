@@ -13,6 +13,8 @@
 #include "medium.h"
 #include "mem.h"
 #include "io.h"
+#include "partition.h"
+#include "derivatives.h"
 
 #define DEFAULT_OUTPUT_FOLDER "results"
 #define DEFAULT_OUTPUT_NAME "form"
@@ -45,10 +47,18 @@ size_t g_cuda_thread_x = 8, g_cuda_thread_y = 8, g_cuda_thread_z = 8;
 
 // passes the iter[0] to iter[1], iter[1] to iter[2] and iter[2] to iter[0]
 static inline void rotate_for_next_iter(starpu_data_handle_t* iter[3]){
-    starpu_data_handle_t* tmp = iter[2]; 
-    iter[2] = iter[1]; 
-    iter[1] = iter[0]; 
-    iter[0] = tmp; 
+    starpu_data_handle_t* tmp = iter[2];
+    iter[2] = iter[1];
+    iter[1] = iter[0];
+    iter[0] = tmp;
+}
+
+// same rotation for child-handle tables (one 18-tuple per cube)
+static inline void rotate_children_for_next_iter(starpu_data_handle_t (*children[3])[CUBE_FACE_NPARTS]){
+    starpu_data_handle_t (*tmp)[CUBE_FACE_NPARTS] = children[2];
+    children[2] = children[1];
+    children[1] = children[0];
+    children[0] = tmp;
 }
 
 
@@ -265,7 +275,7 @@ err_t write_wave(int64_t* n_out, starpu_data_handle_t* wave_iter){
         dump_block_task->cl_arg_free = 1;
         //NOTE: mudado para p_wave_iter[0] para se adequar melhor com o trace do fletcher base
         //      no caso não importa pois write(t = 0) é só zeros no original
-        dump_block_task->handles[0] = wave_iter[block_idx(i, j, k)];
+        dump_block_task->handles[0] = wave_iter[padded_block_idx(i, j, k)];
 
         if((err = starpu_task_submit(dump_block_task)) != 0){
             return err;
@@ -319,6 +329,7 @@ int main(int argc, char **argv){
     int program_status = EXIT_SUCCESS;
     mem_vec_t static_allocs = NULL;
     mem_vec_t medium_allocs = NULL;
+    mem_vec_t initial_wave_allocs = NULL;
 
 #ifdef CUDA_BACKEND
     printf("Using CUDA backend.\n");
@@ -377,6 +388,10 @@ int main(int argc, char **argv){
     TRY(g_cube_width > 7 ? 0 : ME_COUNT_DONT_MATCH, 
         "Tamanho interno para o cubo é muito pequeno."
         "As funções de derivada requerem um bloco cujo tamanho seja pelo menos 1 a menos que o tamanho do kernel, que é 9");
+
+    // the face/edge sub-handles are BORDER_WIDTH thick and the derivatives read STENCIL_RADIUS points into them
+    TRY(BORDER_WIDTH == STENCIL_RADIUS ? 0 : ME_COUNT_DONT_MATCH,
+        "BORDER_WIDTH (%ld) deve ser igual ao raio do stencil das derivadas (%d).\n", BORDER_WIDTH, STENCIL_RADIUS);
  
     const int64_t st = (int64_t) FP_CEIL(tmax / dt);
     // amount of iterations the program will save the block
@@ -462,6 +477,20 @@ int main(int argc, char **argv){
     TRY(mem_allocate(&static_allocs, (void**) &q_wave_iter[1], CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t)));
     TRY(mem_allocate(&static_allocs, (void**) &q_wave_iter[2], CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t)));
 
+    // 18 sub-handles per parent handle (6 faces + 12 edges), one tuple per cube per layer.
+    // Uses g_cube_face_filter from partition.h. Only partition_plan (at registration) and
+    // partition_clean (before each unregister) are called explicitly: StarPU's automatic data
+    // manager inserts the (readonly) partition/unpartition tasks at submission time whenever a
+    // task accesses a sub-handle whose parent is not partitioned the right way.
+    starpu_data_handle_t (*p_wave_children[3])[CUBE_FACE_NPARTS];
+    starpu_data_handle_t (*q_wave_children[3])[CUBE_FACE_NPARTS];
+    for(int layer = 0; layer < 3; layer++){
+        TRY(mem_allocate(&static_allocs, (void**) &p_wave_children[layer],
+            CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t[CUBE_FACE_NPARTS])));
+        TRY(mem_allocate(&static_allocs, (void**) &q_wave_children[layer],
+            CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t[CUBE_FACE_NPARTS])));
+    }
+
     starpu_data_handle_t *hdl_ch1dxx, *hdl_ch1dyy, *hdl_ch1dzz, 
         *hdl_ch1dxy, *hdl_ch1dyz, *hdl_ch1dxz, 
         *hdl_v2px, *hdl_v2pz, *hdl_v2sz, *hdl_v2pn;
@@ -493,49 +522,39 @@ int main(int argc, char **argv){
         BLOCK_REGISTER(hdl_v2pn + idx, v2pn[idx]);
     }
 
-    // alocate the initial values for the waves pp, pc, qp, qc.
-    // the null_block holds all zeros, which all blocks in pp and qp are
-    // the propagation_block holds the point in which the propagation is set
-    // therefore all data handles set are referêncing the null_block or the progration_block
-    // which is only referênced once.
-    FP *null_block, *propagation_block; 
-
-    TRY(mem_allocate(&static_allocs, (void**) &null_block, CUBE_SIZE * sizeof(FP)));
-    TRY(mem_allocate(&static_allocs, (void**) &propagation_block, CUBE_SIZE * sizeof(FP)));
-
-    for(size_t b_i = 0; b_i < CUBE_SIZE; b_i++){
-        null_block[b_i] = propagation_block[b_i] = FP_LIT(0.0);
-    }
-    // iSource in the cube
+    
     const size_t perturbation_source_pos = volume_to_cube_idx(volume_propagation_idx);
-    //insert in this block the propagration source
-    //const FP starting_source_value = medium_source_value(dt, 0);
+    const size_t perturbation_source_cube = volume_to_padded_block_idx(volume_propagation_idx);
 
-    //printf("source value: %.9f\n", starting_source_value);
-    //propagation_block[perturbation_source_pos] = starting_source_value;
-
-    // because it added a padding to every side of the block collection, 
-    // we need to move the perturbation_source cube by one in every direction
-    //block_idx((g_width_in_cubes + 2) / 2, (g_width_in_cubes + 2) / 2, (g_width_in_cubes + 2) / 2);
-    const size_t perturbation_source_cube = volume_to_block_idx(volume_propagation_idx) + block_idx(1, 1, 1);
-
-    for(size_t idx = 0; idx < CUBE(g_width_in_cubes + 2); idx++){
-        BLOCK_REGISTER(p_wave_iter[0] + idx, null_block);
-        BLOCK_REGISTER(q_wave_iter[0] + idx, null_block);
-        // if we are initializing at the idx of the block that will be perturbed 
-        // used the block with the perturbation source
-        if(idx == perturbation_source_cube){
-            BLOCK_REGISTER(p_wave_iter[1] + idx, propagation_block);
-            BLOCK_REGISTER(q_wave_iter[1] + idx, propagation_block);
-        }else{
-            BLOCK_REGISTER(p_wave_iter[1] + idx, null_block);
-            BLOCK_REGISTER(q_wave_iter[1] + idx, null_block);
+    // realiza a alocação inicial das ondas, com buffer zerado próprio para cada handle.
+    // Cubos internos: só os tempos 1 e 2 (t - 1 e t - 2 da primeira iteração), o tempo 0
+    // é registrado dentro do loop. O padding nunca é substituído e passa pelas 3 posições
+    // (em iter[1] os vizinhos leem as faces dele), então precisa dos 3 tempos.
+    for(size_t k = 0; k < g_width_in_cubes + 2; k++)
+    for(size_t j = 0; j < g_width_in_cubes + 2; j++)
+    for(size_t i = 0; i < g_width_in_cubes + 2; i++){
+        const size_t idx = padded_block_idx(i, j, k);
+        const bool is_padding =
+            i == 0 || i == g_width_in_cubes + 1 ||
+            j == 0 || j == g_width_in_cubes + 1 ||
+            k == 0 || k == g_width_in_cubes + 1;
+        for(int iteration = is_padding ? 0 : 1; iteration < 3; iteration++){
+            FP* p_buf;
+            FP* q_buf;
+            TRY(mem_allocate(&initial_wave_allocs, (void**) &p_buf, CUBE_SIZE * sizeof(FP)));
+            TRY(mem_allocate(&initial_wave_allocs, (void**) &q_buf, CUBE_SIZE * sizeof(FP)));
+            for(size_t bi = 0; bi < CUBE_SIZE; bi++){
+                p_buf[bi] = FP_LIT(0.0);
+                q_buf[bi] = FP_LIT(0.0);
+            }
+            BLOCK_REGISTER(p_wave_iter[iteration] + idx, p_buf);
+            BLOCK_REGISTER(q_wave_iter[iteration] + idx, q_buf);
+            starpu_data_partition_plan(p_wave_iter[iteration][idx], &g_cube_face_filter, p_wave_children[iteration][idx]);
+            starpu_data_partition_plan(q_wave_iter[iteration][idx], &g_cube_face_filter, q_wave_children[iteration][idx]);
         }
-        BLOCK_REGISTER(p_wave_iter[2] + idx, null_block);
-        BLOCK_REGISTER(q_wave_iter[2] + idx, null_block);
     }
 
-    #undef BLOCK_REGISTER 
+    #undef BLOCK_REGISTER
 
     const uint64_t initialization_end_time = get_timestamp_ns();
 
@@ -544,14 +563,9 @@ int main(int argc, char **argv){
     printf("Initialization Elapsed time is: %lfs\n", initialization_total_time);
 
 
-    int64_t n_out = 0;
-    // salva o primeiro bloco (nulo)
-    if(enable_io){
-        TRY(write_wave(&n_out, p_wave_iter[0]));
-    }
-
     const uint64_t start_time = get_timestamp_ns();
 
+    int64_t n_out = 0;
     for(int64_t t = 1; t <= st; t++){
         // printf("t: %d\n", t);
         starpu_iteration_push(t);
@@ -580,10 +594,10 @@ int main(int argc, char **argv){
         for(size_t k = 1; k < g_width_in_cubes + 1; k++) // z
         for(size_t j = 1; j < g_width_in_cubes + 1; j++) // y
         for(size_t i = 1; i < g_width_in_cubes + 1; i++){// x
-            const size_t idx = block_idx(i, j, k);
+            const size_t idx = padded_block_idx(i, j, k);
 
             //add to the curr buff
-            //let starpu allocate the data by setting home_node = -1 
+            //let starpu allocate the data by setting home_node = -1
             starpu_block_data_register(&p_wave_iter[0][idx], -1, 0,
                 g_cube_width, SQUARE(g_cube_width),
                 g_cube_width, g_cube_width, g_cube_width, sizeof(FP)
@@ -593,6 +607,9 @@ int main(int argc, char **argv){
                 g_cube_width, SQUARE(g_cube_width),
                 g_cube_width, g_cube_width, g_cube_width, sizeof(FP)
             );
+
+            starpu_data_partition_plan(p_wave_iter[0][idx], &g_cube_face_filter, p_wave_children[0][idx]);
+            starpu_data_partition_plan(q_wave_iter[0][idx], &g_cube_face_filter, q_wave_children[0][idx]);
 
             struct starpu_task* task = starpu_task_create();
             task->name = "wave_propagation";
@@ -615,35 +632,32 @@ int main(int argc, char **argv){
                 AS_BORDER(begin_z), g_cube_width - AS_BORDER(stop_z),
                 dx, dy, dz, dt
             ));
+            #undef AS_BORDER
 
             task->cl_arg = rtm_args;
             task->cl_arg_size = sizeof(struct rtm_args);
             task->cl_arg_free = 1; // free the args after use
-
-            #undef AS_BORDER
-
+            // tag represents the position of the cube
+            // 0  for center, 1 for face, 2 for edge and 3 for corner
             task->use_tag = 1;
-            task->tag_id = 
-                begin_z || stop_z ? 1 : 0 + 
-                begin_y || stop_y ? 1 : 0 + 
-                begin_x || stop_x ? 1 : 0;
-            
-
-            //sprintf(cl_args->name, "[%d, %d, %d, %ld]", i, j, k, t + 1);
-            //task->name = cl_args->name;
+            task->tag_id = (begin_z || stop_z) + (begin_y || stop_y) + (begin_x || stop_x);
 
 
             //select the handles
-            //          ^   ^
-            //          |  /
-            //          y z
-            //          |/
-            // -- x -- >
+            //    ^
+            //   /
+            //  z
+            // /
+            // 0 - x -- >
+            // |
+            // y
+            // |
+            // v
             // ordem ao invés de rotacional vai ser via eixo,
             // blocos do z (-1, +1), depois do y, depois do x
             // dessa forma, o primeiro bloco é o (-1, -1, -1), 
             // depois o (-1, -1, 0), (-1, -1, 1), (-1, 0, -1) ...
-            // essa lista inclui as diagonais que devem ser omitidas, *rsf_body = NULL
+            // essa lista inclui as diagonais que devem ser omitidas
 
             //pre computed values do not have a border and have to be adjusted as such
             const size_t precomp_idx = block_idx(i - 1, j - 1, k - 1);
@@ -658,61 +672,76 @@ int main(int argc, char **argv){
             task->handles[8] = hdl_v2sz[precomp_idx];
             task->handles[9] = hdl_v2pn[precomp_idx];
 
+
+            // Acess the partition. The neighbor at offset (di, dj, dk) contributes 
+            // its OPPOSITE face. The left (x = 0) boundary reads the right (x = width) face of (i-1, j, k).
+            // O eixo x cresce da esquerda para direita, o y de cima para baixo e o z de frente para trás.
+            // dessa forma, padded_block_idx(i + 0, j + 0, k - 1) acessa o cubo a frente do nosso,
+            // precisando então ler a face de trás dele.
+            #define P_FACE(cube, face) p_wave_children[1][cube][cube_face_to_part_idx(face)]
+            #define Q_FACE(cube, face) q_wave_children[1][cube][cube_face_to_part_idx(face)]
+
             // p wave blocks
-            task->handles[10] = p_wave_iter[0][idx]; // write block
+            task->handles[10] = p_wave_iter[0][idx]; // write block (whole cube)
 
             task->handles[11] = p_wave_iter[1][idx]; //central block when t - 1
 
-            task->handles[12] = p_wave_iter[1][block_idx(i + 0, j + 0, k - 1)];
-            task->handles[13] = p_wave_iter[1][block_idx(i + 0, j - 1, k - 1)];
-            task->handles[14] = p_wave_iter[1][block_idx(i - 1, j + 0, k - 1)];
-            task->handles[15] = p_wave_iter[1][block_idx(i + 1, j + 0, k - 1)];
-            task->handles[16] = p_wave_iter[1][block_idx(i + 0, j + 1, k - 1)];
+            // k - 1 layer (the cube in front, reads its BACK face = high-z border)
+            task->handles[12] = P_FACE(padded_block_idx(i + 0, j + 0, k - 1), CFACE_BACK);
+            task->handles[13] = P_FACE(padded_block_idx(i + 0, j - 1, k - 1), CFACE_BOTTOM | CFACE_BACK);
+            task->handles[14] = P_FACE(padded_block_idx(i - 1, j + 0, k - 1), CFACE_RIGHT   | CFACE_BACK);
+            task->handles[15] = P_FACE(padded_block_idx(i + 1, j + 0, k - 1), CFACE_LEFT   | CFACE_BACK);
+            task->handles[16] = P_FACE(padded_block_idx(i + 0, j + 1, k - 1), CFACE_TOP    | CFACE_BACK);
 
-            task->handles[17] = p_wave_iter[1][block_idx(i - 1, j - 1, k + 0)];
-            task->handles[18] = p_wave_iter[1][block_idx(i + 0, j - 1, k + 0)];
-            task->handles[19] = p_wave_iter[1][block_idx(i + 1, j - 1, k + 0)];
-            task->handles[20] = p_wave_iter[1][block_idx(i - 1, j + 0, k + 0)];
-            task->handles[21] = p_wave_iter[1][block_idx(i + 1, j + 0, k + 0)];
-            task->handles[22] = p_wave_iter[1][block_idx(i - 1, j + 1, k + 0)];
-            task->handles[23] = p_wave_iter[1][block_idx(i + 0, j + 1, k + 0)];
-            task->handles[24] = p_wave_iter[1][block_idx(i + 1, j + 1, k + 0)];
+            // k layer
+            task->handles[17] = P_FACE(padded_block_idx(i - 1, j - 1, k + 0), CFACE_RIGHT   | CFACE_BOTTOM);
+            task->handles[18] = P_FACE(padded_block_idx(i + 0, j - 1, k + 0), CFACE_BOTTOM);
+            task->handles[19] = P_FACE(padded_block_idx(i + 1, j - 1, k + 0), CFACE_LEFT   | CFACE_BOTTOM);
+            task->handles[20] = P_FACE(padded_block_idx(i - 1, j + 0, k + 0), CFACE_RIGHT);
+            task->handles[21] = P_FACE(padded_block_idx(i + 1, j + 0, k + 0), CFACE_LEFT);
+            task->handles[22] = P_FACE(padded_block_idx(i - 1, j + 1, k + 0), CFACE_RIGHT   | CFACE_TOP);
+            task->handles[23] = P_FACE(padded_block_idx(i + 0, j + 1, k + 0), CFACE_TOP);
+            task->handles[24] = P_FACE(padded_block_idx(i + 1, j + 1, k + 0), CFACE_LEFT   | CFACE_TOP);
 
-            task->handles[25] = p_wave_iter[1][block_idx(i + 0, j + 0, k + 1)];
-            task->handles[26] = p_wave_iter[1][block_idx(i + 0, j - 1, k + 1)];
-            task->handles[27] = p_wave_iter[1][block_idx(i - 1, j + 0, k + 1)];
-            task->handles[28] = p_wave_iter[1][block_idx(i + 1, j + 0, k + 1)];
-            task->handles[29] = p_wave_iter[1][block_idx(i + 0, j + 1, k + 1)];
+            // k + 1 layer (the cube behind, reads its FRONT face = low-z border)
+            task->handles[25] = P_FACE(padded_block_idx(i + 0, j + 0, k + 1), CFACE_FRONT);
+            task->handles[26] = P_FACE(padded_block_idx(i + 0, j - 1, k + 1), CFACE_BOTTOM | CFACE_FRONT);
+            task->handles[27] = P_FACE(padded_block_idx(i - 1, j + 0, k + 1), CFACE_RIGHT   | CFACE_FRONT);
+            task->handles[28] = P_FACE(padded_block_idx(i + 1, j + 0, k + 1), CFACE_LEFT   | CFACE_FRONT);
+            task->handles[29] = P_FACE(padded_block_idx(i + 0, j + 1, k + 1), CFACE_TOP    | CFACE_FRONT);
 
             task->handles[30] = p_wave_iter[2][idx]; //central block when t - 2
 
             // q wave blocks
-            task->handles[31] = q_wave_iter[0][idx]; // write block
+            task->handles[31] = q_wave_iter[0][idx]; // write block (whole cube)
 
             task->handles[32] = q_wave_iter[1][idx]; //central block when t - 1
 
-            task->handles[33] = q_wave_iter[1][block_idx(i + 0, j + 0, k - 1)];
-            task->handles[34] = q_wave_iter[1][block_idx(i + 0, j - 1, k - 1)];
-            task->handles[35] = q_wave_iter[1][block_idx(i - 1, j + 0, k - 1)];
-            task->handles[36] = q_wave_iter[1][block_idx(i + 1, j + 0, k - 1)];
-            task->handles[37] = q_wave_iter[1][block_idx(i + 0, j + 1, k - 1)];
+            task->handles[33] = Q_FACE(padded_block_idx(i + 0, j + 0, k - 1), CFACE_BACK);
+            task->handles[34] = Q_FACE(padded_block_idx(i + 0, j - 1, k - 1), CFACE_BOTTOM | CFACE_BACK);
+            task->handles[35] = Q_FACE(padded_block_idx(i - 1, j + 0, k - 1), CFACE_RIGHT   | CFACE_BACK);
+            task->handles[36] = Q_FACE(padded_block_idx(i + 1, j + 0, k - 1), CFACE_LEFT   | CFACE_BACK);
+            task->handles[37] = Q_FACE(padded_block_idx(i + 0, j + 1, k - 1), CFACE_TOP    | CFACE_BACK);
 
-            task->handles[38] = q_wave_iter[1][block_idx(i - 1, j - 1, k + 0)];
-            task->handles[39] = q_wave_iter[1][block_idx(i + 0, j - 1, k + 0)];
-            task->handles[40] = q_wave_iter[1][block_idx(i + 1, j - 1, k + 0)];
-            task->handles[41] = q_wave_iter[1][block_idx(i - 1, j + 0, k + 0)];
-            task->handles[42] = q_wave_iter[1][block_idx(i + 1, j + 0, k + 0)];
-            task->handles[43] = q_wave_iter[1][block_idx(i - 1, j + 1, k + 0)];
-            task->handles[44] = q_wave_iter[1][block_idx(i + 0, j + 1, k + 0)];
-            task->handles[45] = q_wave_iter[1][block_idx(i + 1, j + 1, k + 0)];
+            task->handles[38] = Q_FACE(padded_block_idx(i - 1, j - 1, k + 0), CFACE_RIGHT   | CFACE_BOTTOM);
+            task->handles[39] = Q_FACE(padded_block_idx(i + 0, j - 1, k + 0), CFACE_BOTTOM);
+            task->handles[40] = Q_FACE(padded_block_idx(i + 1, j - 1, k + 0), CFACE_LEFT   | CFACE_BOTTOM);
+            task->handles[41] = Q_FACE(padded_block_idx(i - 1, j + 0, k + 0), CFACE_RIGHT);
+            task->handles[42] = Q_FACE(padded_block_idx(i + 1, j + 0, k + 0), CFACE_LEFT);
+            task->handles[43] = Q_FACE(padded_block_idx(i - 1, j + 1, k + 0), CFACE_RIGHT   | CFACE_TOP);
+            task->handles[44] = Q_FACE(padded_block_idx(i + 0, j + 1, k + 0), CFACE_TOP);
+            task->handles[45] = Q_FACE(padded_block_idx(i + 1, j + 1, k + 0), CFACE_LEFT   | CFACE_TOP);
 
-            task->handles[46] = q_wave_iter[1][block_idx(i + 0, j + 0, k + 1)];
-            task->handles[47] = q_wave_iter[1][block_idx(i + 0, j - 1, k + 1)];
-            task->handles[48] = q_wave_iter[1][block_idx(i - 1, j + 0, k + 1)];
-            task->handles[49] = q_wave_iter[1][block_idx(i + 1, j + 0, k + 1)];
-            task->handles[50] = q_wave_iter[1][block_idx(i + 0, j + 1, k + 1)];
+            task->handles[46] = Q_FACE(padded_block_idx(i + 0, j + 0, k + 1), CFACE_FRONT);
+            task->handles[47] = Q_FACE(padded_block_idx(i + 0, j - 1, k + 1), CFACE_BOTTOM | CFACE_FRONT);
+            task->handles[48] = Q_FACE(padded_block_idx(i - 1, j + 0, k + 1), CFACE_RIGHT   | CFACE_FRONT);
+            task->handles[49] = Q_FACE(padded_block_idx(i + 1, j + 0, k + 1), CFACE_LEFT   | CFACE_FRONT);
+            task->handles[50] = Q_FACE(padded_block_idx(i + 0, j + 1, k + 1), CFACE_TOP    | CFACE_FRONT);
 
             task->handles[51] = q_wave_iter[2][idx]; //central block when t - 2
+
+            #undef P_FACE
+            #undef Q_FACE
 
             TRY(starpu_task_submit(task));
         }
@@ -729,18 +758,23 @@ int main(int argc, char **argv){
             }
         }
 
-        if(t >= 2){
-            for(size_t k = 1; k < g_width_in_cubes + 1; k++)
-            for(size_t j = 1; j < g_width_in_cubes + 1; j++)
-            for(size_t i = 1; i < g_width_in_cubes + 1; i++){
-                starpu_data_unregister_submit(p_wave_iter[2][block_idx(i, j, k)]);
-                starpu_data_unregister_submit(q_wave_iter[2][block_idx(i, j, k)]);
-            }
+        // iter[2] (t - 2) is not used after this iteration's tasks: drop its plan and the handle.
+        // It rotates into iter[0], where it gets overwritten by a fresh registration.
+        for(size_t k = 1; k < g_width_in_cubes + 1; k++)
+        for(size_t j = 1; j < g_width_in_cubes + 1; j++)
+        for(size_t i = 1; i < g_width_in_cubes + 1; i++){
+            const size_t idx = padded_block_idx(i, j, k);
+            starpu_data_partition_clean(p_wave_iter[2][idx], CUBE_FACE_NPARTS, p_wave_children[2][idx]);
+            starpu_data_partition_clean(q_wave_iter[2][idx], CUBE_FACE_NPARTS, q_wave_children[2][idx]);
+            starpu_data_unregister_submit(p_wave_iter[2][idx]);
+            starpu_data_unregister_submit(q_wave_iter[2][idx]);
         }
         // rotate the iterations so that the currently computed values are the t - 1 values
         // reuse the space for the t - 2 for the new t values
         rotate_for_next_iter(p_wave_iter);
         rotate_for_next_iter(q_wave_iter);
+        rotate_children_for_next_iter(p_wave_children);
+        rotate_children_for_next_iter(q_wave_children);
 
         starpu_iteration_pop();
     }
@@ -767,33 +801,36 @@ int main(int argc, char **argv){
     for(size_t k = 1; k < g_width_in_cubes + 1; k++){
         for(size_t j = 1; j < g_width_in_cubes + 1; j++){
             for(size_t i = 1; i < g_width_in_cubes + 1; i++){
-                starpu_data_handle_t ph1 = p_wave_iter[1][block_idx(i, j, k)];
-                starpu_data_handle_t ph2 = p_wave_iter[2][block_idx(i, j, k)];
-
-                starpu_data_handle_t qh1 = q_wave_iter[1][block_idx(i, j, k)];
-                starpu_data_handle_t qh2 = q_wave_iter[2][block_idx(i, j, k)];
-                /*
-                // first need to acquire the data
-                TRY(starpu_data_acquire(ph1, STARPU_R));
-
-                starpu_ssize_t size = sizeof(double) * CUBE_SIZE;
-                TRY(starpu_data_pack(ph1, (void**)&result_block, &size));
-
-                //print_block(result_block);
-                aggregate_block_buffers(result_volume, result_block, i - 1, j - 1, k - 1);
-                clear_block(result_block, g_cube_width);
-
-                //NOTE: função aqui para testar se a borda não está sendo violada
-                TRY(has_clear_edge(result_block, i, j, k), "block %ld, %ld, %ld fails clear block test", i, j, k);
-
-                //then release
-                starpu_data_release(ph1);
-                */
-                starpu_data_unregister(ph1);
-                starpu_data_unregister(ph2);
-                starpu_data_unregister(qh1);
-                starpu_data_unregister(qh2);
+                const size_t idx = padded_block_idx(i, j, k);
+                starpu_data_partition_clean(p_wave_iter[1][idx], CUBE_FACE_NPARTS, p_wave_children[1][idx]);
+                starpu_data_partition_clean(p_wave_iter[2][idx], CUBE_FACE_NPARTS, p_wave_children[2][idx]);
+                starpu_data_partition_clean(q_wave_iter[1][idx], CUBE_FACE_NPARTS, q_wave_children[1][idx]);
+                starpu_data_partition_clean(q_wave_iter[2][idx], CUBE_FACE_NPARTS, q_wave_children[2][idx]);
+                starpu_data_unregister(p_wave_iter[1][idx]);
+                starpu_data_unregister(p_wave_iter[2][idx]);
+                starpu_data_unregister(q_wave_iter[1][idx]);
+                starpu_data_unregister(q_wave_iter[2][idx]);
             }
+        }
+    }
+
+    // libera os blocos de padding
+    for(size_t k = 0; k < g_width_in_cubes + 2; k++)
+    for(size_t j = 0; j < g_width_in_cubes + 2; j++)
+    for(size_t i = 0; i < g_width_in_cubes + 2; i++){
+        const bool is_padding =
+            i == 0 || i == g_width_in_cubes + 1 ||
+            j == 0 || j == g_width_in_cubes + 1 ||
+            k == 0 || k == g_width_in_cubes + 1;
+        if(!is_padding){
+            continue;
+        }
+        const size_t idx = padded_block_idx(i, j, k);
+        for(int layer = 0; layer < 3; layer++){
+            starpu_data_partition_clean(p_wave_iter[layer][idx], CUBE_FACE_NPARTS, p_wave_children[layer][idx]);
+            starpu_data_partition_clean(q_wave_iter[layer][idx], CUBE_FACE_NPARTS, q_wave_children[layer][idx]);
+            starpu_data_unregister(p_wave_iter[layer][idx]);
+            starpu_data_unregister(q_wave_iter[layer][idx]);
         }
     }
 
@@ -810,7 +847,7 @@ int main(int argc, char **argv){
     fprintf(rsf_header, "n1=%ld\n", g_volume_width /*sx*/);
     fprintf(rsf_header, "n2=%ld\n", g_volume_width /*sy*/);
     fprintf(rsf_header, "n3=%ld\n", g_volume_width /*sz*/);
-    fprintf(rsf_header, "n4=%ld\n", n_out); // TODO: validar n_out 
+    fprintf(rsf_header, "n4=%ld\n", n_out);  
     fprintf(rsf_header, "d1=%f\n", dx);
     fprintf(rsf_header, "d2=%f\n", dy);
     fprintf(rsf_header, "d3=%f\n", dz);
@@ -824,6 +861,7 @@ int main(int argc, char **argv){
 
     mem_free(&medium_allocs);
     mem_free(&static_allocs);
+    mem_free(&initial_wave_allocs);
     starpu_shutdown();
     assert(io_state_finish() == 0);
     return program_status;

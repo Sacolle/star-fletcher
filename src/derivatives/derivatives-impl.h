@@ -2,6 +2,7 @@
 #define _DERIVATIVES_GUARD_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "floatingpoint.h"
 
@@ -10,6 +11,26 @@
 #else
 #define ATTRIBUTE
 #endif
+
+// Half width of the eighth order stencil. It is also the thickness of the face/edge
+// sub-handles produced by g_cube_face_filter (BORDER_WIDTH, checked in main.c).
+#define STENCIL_RADIUS 4
+
+// Strided view over a cube, or over a face/edge slice of a neighbor cube.
+// Each view keeps its own strides: in place slices share the parent's, but a
+// separately allocated slice (e.g. on another device) is compact.
+typedef struct {
+    const FP* ptr;
+    int32_t ldy;
+    int32_t ldz;
+} block_view_t;
+
+// We are putting the neighboring blocks into a array of size NEIGHBORHOOD_SIZE
+// So that we ease indexing. We still want to use notation similar to the main function.
+// Therefore the center element of this cube is the (0,0,0) and we index as increments from it
+// The block above is (0, -1, 0) (Y axis grows down) and the block to the right is (1, 0, 0)
+#define NEIGHBOR_IDX(dx, dy, dz) (((dz) + 1) * 9 + ((dy) + 1) * 3 + ((dx) + 1))
+#define NEIGHBORHOOD_SIZE 27
 
 #define L1 FP_LIT(0.8)                    // 4/5
 #define L2 FP_LIT(-0.2)                   // -1/5
@@ -20,7 +41,7 @@
 
 #define L11 FP_LIT(0.64)                    // L1*L1
 #define L12 FP_LIT(-0.16)                   // L1*L2
-#define L13 FP_LIT(0.03047619047619047618)  // L1*L2
+#define L13 FP_LIT(0.03047619047619047618)  // L1*L3
 #define L14 FP_LIT(-0.00285714285714285713) // L1*L4
 #define L22 FP_LIT(0.04)                    // L2*L2
 #define L23 FP_LIT(-0.00761904761904761904) // L2*L3
@@ -37,236 +58,193 @@
 #define K4 FP_LIT(-0.00178571428571428571) // -1/560
 
 
+// Second derivative along one axis at (x, y, z) of the central cube of `neighborhood`.
+ATTRIBUTE FP snd_deriv_x(const block_view_t *neighborhood, int32_t x, int32_t y, int32_t z, int32_t cube_width, FP d2inv);
+ATTRIBUTE FP snd_deriv_y(const block_view_t *neighborhood, int32_t x, int32_t y, int32_t z, int32_t cube_width, FP d2inv);
+ATTRIBUTE FP snd_deriv_z(const block_view_t *neighborhood, int32_t x, int32_t y, int32_t z, int32_t cube_width, FP d2inv);
 
-ATTRIBUTE FP snd_deriv_dir(
-    const FP *block, const FP *block_minus, const FP *block_plus, const int dir,
-    const size_t base_idx, const int stride, const FP d2inv,
-    const int cube_width
-);
-
-ATTRIBUTE FP cross_deriv_ddir(
-    const FP *block, const size_t base_idx, const size_t dir1,
-    const FP *block_minus_d1, const FP *block_plus_d1, const int stride_d1,
-    const size_t dir2, const FP *block_minus_d2, const FP *block_plus_d2,
-    const int stride_d2, const FP *block_diagonal_plus_plus,
-    const FP *block_diagonal_plus_minus, const FP *block_diagonal_minus_plus,
-    const FP *block_diagonal_minus_minus, const int cube_width,
-    const FP dinv
-);
+// Cross derivative on a pair of axes at (x, y, z) of the central cube of `neighborhood`.
+ATTRIBUTE FP cross_deriv_xy(const block_view_t *neighborhood, int32_t x, int32_t y, int32_t z, int32_t cube_width, FP dinv);
+ATTRIBUTE FP cross_deriv_yz(const block_view_t *neighborhood, int32_t x, int32_t y, int32_t z, int32_t cube_width, FP dinv);
+ATTRIBUTE FP cross_deriv_xz(const block_view_t *neighborhood, int32_t x, int32_t y, int32_t z, int32_t cube_width, FP dinv);
 
 // add the impl
 #ifdef CODE_IMPL
 
+// Which neighbor a point reaches along one axis: the low side (neg), the high side (pos),
+// or none (center). Needs cube_width >= 2 * STENCIL_RADIUS (checked in main.c).
+enum { SIDE_CENTER = 0, SIDE_POS = 1, SIDE_NEG = 2 };
 
-// bit tuple for easier switch statments
-#define MAX_ITEM_BITS (32 - __builtin_clz(MAX_MASK_NUM))
-#define BITMASK_PAIR(x, y) (((x) << MAX_ITEM_BITS) | (y))
-
-
-
-
-
-// espelha no eixo
-// a deirvação baseia-se na fórmula do índice f(x, y, z) = x + Wy + W²z
-// f(W - 1 - x, y, z) é o ponto espelhado no eixo x, então na lista 0, 1, 2, 3, 4. g(4) = 0 e g(1) = 3.
-// subsitituido isso na fórmula do índice, temos: 
-// f(W - 1 - x, y, z) = W - 1 - x + Wy + W²z
-// que pode ser simplificado nas seguintes etapas para
-// f(W - 1 - x, y, z) = W - 1 - x - x + x + Wy + W²z
-// f(W - 1 - x, y, z) = W - 1 - 2x + f(x, y, z)
-// As formulas para Y e Z são derivadas da mesma forma sendo:
-// f(x, W - 1 - y, z) = W² - W - 2Wy + f(x, y, z)
-// f(x, y, W - 1 - z) = W³ - W² - 2W²z + f(x, y, z)
-//
-// Tudo isso pode ser reduzido para:
-// W * stride - stride - 2 * stride * dir + idx
-// pois a cada direção tem seu stride associado (x: 1, y: W, z: W²)
-// Portanto
-// flip no eixo X deve-se passar stride = 1
-// flip no eixo Y deve-se passar stride = cube_width
-// flip no eixo Z deve-se passar stride = cube_width²
-ATTRIBUTE static inline size_t flip(const size_t line_idx, const size_t idx, const int stride, const int cube_width){
-    return (stride * cube_width - stride) - 2 * line_idx * stride + idx;
+ATTRIBUTE static inline int stencil_side(int32_t coord, int32_t cube_width){
+    if(coord < STENCIL_RADIUS) return SIDE_NEG;
+    if(coord > cube_width - 1 - STENCIL_RADIUS) return SIDE_POS;
+    return SIDE_CENTER;
 }
 
 #include "./cross-deriv.gen.c"
 
-ATTRIBUTE FP snd_deriv_dir_pos(
-    const FP* block, const FP* block_plus, 
-    const int dir, const size_t base_idx, const int stride, 
-    const FP d2inv, const int cube_width
+// `depth` is how many points separate base_idx from the high border of the central cube.
+// `border_idx` is the point of `pos` right after that border; both views are walked with
+// their own stride along the derivative axis.
+ATTRIBUTE static FP snd_deriv_pos_impl(
+    const FP* central, const FP* pos,
+    int32_t depth, int32_t base_idx, int32_t stride,
+    int32_t border_idx, int32_t pos_stride,
+    FP d2inv
 ){
-    // get how far the dir is 
-    const int depth = cube_width - dir - 1;
-    const size_t border_idx = flip(cube_width - 1, base_idx + depth * stride, stride, cube_width);
     switch (depth)
     {
     case 0:
         /* right at the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block_plus[border_idx + 0 * stride] + block[base_idx - 1 * stride]) + 
-            K2 * (block_plus[border_idx + 1 * stride] + block[base_idx - 2 * stride]) + 
-            K3 * (block_plus[border_idx + 2 * stride] + block[base_idx - 3 * stride]) + 
-            K4 * (block_plus[border_idx + 3 * stride] + block[base_idx - 4 * stride])
+            K0 * central[base_idx] +
+            K1 * (pos[border_idx + 0 * pos_stride] + central[base_idx - 1 * stride]) +
+            K2 * (pos[border_idx + 1 * pos_stride] + central[base_idx - 2 * stride]) +
+            K3 * (pos[border_idx + 2 * pos_stride] + central[base_idx - 3 * stride]) +
+            K4 * (pos[border_idx + 3 * pos_stride] + central[base_idx - 4 * stride])
         ) * (d2inv);
     case 1:
         /* right before the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block[base_idx + 1 * stride] + block[base_idx - 1 * stride]) + 
-            K2 * (block_plus[border_idx + 0 * stride] + block[base_idx - 2 * stride]) + 
-            K3 * (block_plus[border_idx + 1 * stride] + block[base_idx - 3 * stride]) + 
-            K4 * (block_plus[border_idx + 2 * stride] + block[base_idx - 4 * stride])
+            K0 * central[base_idx] +
+            K1 * (central[base_idx + 1 * stride] + central[base_idx - 1 * stride]) +
+            K2 * (pos[border_idx + 0 * pos_stride] + central[base_idx - 2 * stride]) +
+            K3 * (pos[border_idx + 1 * pos_stride] + central[base_idx - 3 * stride]) +
+            K4 * (pos[border_idx + 2 * pos_stride] + central[base_idx - 4 * stride])
         ) * (d2inv);
     case 2:
         /* 2 before the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block[base_idx + 1 * stride] + block[base_idx - 1 * stride]) + 
-            K2 * (block[base_idx + 2 * stride] + block[base_idx - 2 * stride]) + 
-            K3 * (block_plus[border_idx + 0 * stride] + block[base_idx - 3 * stride]) + 
-            K4 * (block_plus[border_idx + 1 * stride] + block[base_idx - 4 * stride])
+            K0 * central[base_idx] +
+            K1 * (central[base_idx + 1 * stride] + central[base_idx - 1 * stride]) +
+            K2 * (central[base_idx + 2 * stride] + central[base_idx - 2 * stride]) +
+            K3 * (pos[border_idx + 0 * pos_stride] + central[base_idx - 3 * stride]) +
+            K4 * (pos[border_idx + 1 * pos_stride] + central[base_idx - 4 * stride])
         ) * (d2inv);
-
     case 3:
         /* 3 before the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block[base_idx + 1 * stride] + block[base_idx - 1 * stride]) + 
-            K2 * (block[base_idx + 2 * stride] + block[base_idx - 2 * stride]) + 
-            K3 * (block[base_idx + 3 * stride] + block[base_idx - 3 * stride]) + 
-            K4 * (block_plus[border_idx + 0 * stride] + block[base_idx - 4 * stride])
+            K0 * central[base_idx] +
+            K1 * (central[base_idx + 1 * stride] + central[base_idx - 1 * stride]) +
+            K2 * (central[base_idx + 2 * stride] + central[base_idx - 2 * stride]) +
+            K3 * (central[base_idx + 3 * stride] + central[base_idx - 3 * stride]) +
+            K4 * (pos[border_idx + 0 * pos_stride] + central[base_idx - 4 * stride])
         ) * (d2inv);
-    
     default:
         /* 4 and less before the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block[base_idx + 1 * stride] + block[base_idx - 1 * stride]) + 
-            K2 * (block[base_idx + 2 * stride] + block[base_idx - 2 * stride]) + 
-            K3 * (block[base_idx + 3 * stride] + block[base_idx - 3 * stride]) + 
-            K4 * (block[base_idx + 4 * stride] + block[base_idx - 4 * stride])
+            K0 * central[base_idx] +
+            K1 * (central[base_idx + 1 * stride] + central[base_idx - 1 * stride]) +
+            K2 * (central[base_idx + 2 * stride] + central[base_idx - 2 * stride]) +
+            K3 * (central[base_idx + 3 * stride] + central[base_idx - 3 * stride]) +
+            K4 * (central[base_idx + 4 * stride] + central[base_idx - 4 * stride])
         ) * (d2inv);
     }
 }
 
-
-ATTRIBUTE FP snd_deriv_dir_neg(
-    const FP* block, const FP* block_minus, 
-    const int dir, const size_t base_idx, const int stride, 
-    const FP d2inv, const int cube_width
+// Mirror of snd_deriv_pos_impl for the low border: `depth` points separate base_idx from
+// it and `border_idx` is the point of `neg` right before it.
+ATTRIBUTE static FP snd_deriv_neg_impl(
+    const FP* central, const FP* neg,
+    int32_t depth, int32_t base_idx, int32_t stride,
+    int32_t border_idx, int32_t neg_stride,
+    FP d2inv
 ){
-    // get how far the dir is 
-    const int depth = dir;
-    const size_t border_idx = flip(0, base_idx - depth * stride, stride, cube_width);
     switch (depth)
     {
     case 0:
         /* right at the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block[base_idx + 1 * stride] + block_minus[border_idx - 0 * stride]) + 
-            K2 * (block[base_idx + 2 * stride] + block_minus[border_idx - 1 * stride]) + 
-            K3 * (block[base_idx + 3 * stride] + block_minus[border_idx - 2 * stride]) + 
-            K4 * (block[base_idx + 4 * stride] + block_minus[border_idx - 3 * stride])
+            K0 * central[base_idx] +
+            K1 * (central[base_idx + 1 * stride] + neg[border_idx - 0 * neg_stride]) +
+            K2 * (central[base_idx + 2 * stride] + neg[border_idx - 1 * neg_stride]) +
+            K3 * (central[base_idx + 3 * stride] + neg[border_idx - 2 * neg_stride]) +
+            K4 * (central[base_idx + 4 * stride] + neg[border_idx - 3 * neg_stride])
         ) * (d2inv);
     case 1:
         /* right before the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block[base_idx + 1 * stride] + block[base_idx - 1 * stride]) + 
-            K2 * (block[base_idx + 2 * stride] + block_minus[border_idx - 0 * stride]) + 
-            K3 * (block[base_idx + 3 * stride] + block_minus[border_idx - 1 * stride]) + 
-            K4 * (block[base_idx + 4 * stride] + block_minus[border_idx - 2 * stride])
+            K0 * central[base_idx] +
+            K1 * (central[base_idx + 1 * stride] + central[base_idx - 1 * stride]) +
+            K2 * (central[base_idx + 2 * stride] + neg[border_idx - 0 * neg_stride]) +
+            K3 * (central[base_idx + 3 * stride] + neg[border_idx - 1 * neg_stride]) +
+            K4 * (central[base_idx + 4 * stride] + neg[border_idx - 2 * neg_stride])
         ) * (d2inv);
     case 2:
         /* 2 before the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block[base_idx + 1 * stride] + block[base_idx - 1 * stride]) + 
-            K2 * (block[base_idx + 2 * stride] + block[base_idx - 2 * stride]) + 
-            K3 * (block[base_idx + 3 * stride] + block_minus[border_idx - 0 * stride]) + 
-            K4 * (block[base_idx + 4 * stride] + block_minus[border_idx - 1 * stride])
+            K0 * central[base_idx] +
+            K1 * (central[base_idx + 1 * stride] + central[base_idx - 1 * stride]) +
+            K2 * (central[base_idx + 2 * stride] + central[base_idx - 2 * stride]) +
+            K3 * (central[base_idx + 3 * stride] + neg[border_idx - 0 * neg_stride]) +
+            K4 * (central[base_idx + 4 * stride] + neg[border_idx - 1 * neg_stride])
         ) * (d2inv);
-
     case 3:
         /* 3 before the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block[base_idx + 1 * stride] + block[base_idx - 1 * stride]) + 
-            K2 * (block[base_idx + 2 * stride] + block[base_idx - 2 * stride]) + 
-            K3 * (block[base_idx + 3 * stride] + block[base_idx - 3 * stride]) + 
-            K4 * (block[base_idx + 4 * stride] + block_minus[border_idx - 0 * stride])
+            K0 * central[base_idx] +
+            K1 * (central[base_idx + 1 * stride] + central[base_idx - 1 * stride]) +
+            K2 * (central[base_idx + 2 * stride] + central[base_idx - 2 * stride]) +
+            K3 * (central[base_idx + 3 * stride] + central[base_idx - 3 * stride]) +
+            K4 * (central[base_idx + 4 * stride] + neg[border_idx - 0 * neg_stride])
         ) * (d2inv);
-    
     default:
         /* 4 and less before the border */
         return (
-            K0 * block[base_idx] + 
-            K1 * (block[base_idx + 1 * stride] + block[base_idx - 1 * stride]) + 
-            K2 * (block[base_idx + 2 * stride] + block[base_idx - 2 * stride]) + 
-            K3 * (block[base_idx + 3 * stride] + block[base_idx - 3 * stride]) + 
-            K4 * (block[base_idx + 4 * stride] + block[base_idx - 4 * stride])
+            K0 * central[base_idx] +
+            K1 * (central[base_idx + 1 * stride] + central[base_idx - 1 * stride]) +
+            K2 * (central[base_idx + 2 * stride] + central[base_idx - 2 * stride]) +
+            K3 * (central[base_idx + 3 * stride] + central[base_idx - 3 * stride]) +
+            K4 * (central[base_idx + 4 * stride] + central[base_idx - 4 * stride])
         ) * (d2inv);
     }
 }
 
-ATTRIBUTE FP snd_deriv_dir(
-    const FP* block, const FP* block_minus, const FP* block_plus, 
-    const int dir, const size_t base_idx, const int stride, 
-    const FP d2inv, const int cube_width
-){
-    // neg case
-    if(dir < 4){
-        return snd_deriv_dir_neg(block, block_minus, dir, base_idx, stride, d2inv, cube_width);
+ATTRIBUTE FP snd_deriv_x(const block_view_t *neighborhood, int32_t x, int32_t y, int32_t z, int32_t cube_width, FP d2inv){
+    const block_view_t center = neighborhood[NEIGHBOR_IDX(0, 0, 0)];
+    const int32_t base_idx = x + y * center.ldy + z * center.ldz;
+
+    if(x < STENCIL_RADIUS){
+        const block_view_t left = neighborhood[NEIGHBOR_IDX(-1, 0, 0)];
+        const int32_t border_idx = STENCIL_RADIUS - 1 + y * left.ldy + z * left.ldz;
+        return snd_deriv_neg_impl(center.ptr, left.ptr, x, base_idx, 1, border_idx, 1, d2inv);
     }else{
-        return snd_deriv_dir_pos(block, block_plus, dir, base_idx, stride, d2inv, cube_width);
+        const block_view_t right = neighborhood[NEIGHBOR_IDX(+1, 0, 0)];
+        const int32_t border_idx = y * right.ldy + z * right.ldz;
+        return snd_deriv_pos_impl(center.ptr, right.ptr, cube_width - 1 - x, base_idx, 1, border_idx, 1, d2inv);
     }
 }
 
+ATTRIBUTE FP snd_deriv_y(const block_view_t *neighborhood, int32_t x, int32_t y, int32_t z, int32_t cube_width, FP d2inv){
+    const block_view_t center = neighborhood[NEIGHBOR_IDX(0, 0, 0)];
+    const int32_t base_idx = x + y * center.ldy + z * center.ldz;
 
-ATTRIBUTE FP cross_deriv_ddir(
-    const FP* block, const size_t base_idx,
-    const size_t dir1, const FP* block_minus_d1, const FP* block_plus_d1, const int stride_d1,
-    const size_t dir2, const FP* block_minus_d2, const FP* block_plus_d2, const int stride_d2,
-    const FP* block_diagonal_plus_plus, const FP* block_diagonal_plus_minus, 
-    const FP* block_diagonal_minus_plus, const FP* block_diagonal_minus_minus,
-    const int cube_width, const FP dinv
-){
-    #define MAX_MASK_NUM 1
-    // assuming that truth is one
-    // 0 is center, 1 is plus and 2 is minus
-    int d1 = BITMASK_PAIR(dir1 < 4, dir1 > cube_width - 1 - 4);
-    int d2 = BITMASK_PAIR(dir2 < 4, dir2 > cube_width - 1 - 4);
-    #undef MAX_MASK_NUM
-
-    #define ARGS block, base_idx, \
-        dir1, block_minus_d1, block_plus_d1, stride_d1, \
-        dir2, block_minus_d2, block_plus_d2, stride_d2, \
-        block_diagonal_plus_plus, block_diagonal_plus_minus, \
-        block_diagonal_minus_plus, block_diagonal_minus_minus, \
-        cube_width, dinv
-
-
-    #define MAX_MASK_NUM 2
-    switch (BITMASK_PAIR(d1, d2))
-    {
-    case BITMASK_PAIR(1, 0): return cross_deriv_pos_center(ARGS);
-    case BITMASK_PAIR(1, 1): return cross_deriv_pos_pos(ARGS);
-    case BITMASK_PAIR(1, 2): return cross_deriv_pos_neg(ARGS);
-    case BITMASK_PAIR(2, 0): return cross_deriv_neg_center(ARGS);
-    case BITMASK_PAIR(2, 1): return cross_deriv_neg_pos(ARGS);
-    case BITMASK_PAIR(2, 2): return cross_deriv_neg_neg(ARGS);
-    case BITMASK_PAIR(0, 1): return cross_deriv_center_pos(ARGS);
-    case BITMASK_PAIR(0, 2): return cross_deriv_center_neg(ARGS);
-    case BITMASK_PAIR(0, 0): 
-    default: return cross_deriv_center_center(ARGS);
+    if(y < STENCIL_RADIUS){
+        const block_view_t top = neighborhood[NEIGHBOR_IDX(0, -1, 0)];
+        const int32_t border_idx = x + (STENCIL_RADIUS - 1) * top.ldy + z * top.ldz;
+        return snd_deriv_neg_impl(center.ptr, top.ptr, y, base_idx, center.ldy, border_idx, top.ldy, d2inv);
+    }else{
+        const block_view_t bottom = neighborhood[NEIGHBOR_IDX(0, +1, 0)];
+        const int32_t border_idx = x + z * bottom.ldz;
+        return snd_deriv_pos_impl(center.ptr, bottom.ptr, cube_width - 1 - y, base_idx, center.ldy, border_idx, bottom.ldy, d2inv);
     }
-    #undef MAX_MASK_NUM
 }
 
+ATTRIBUTE FP snd_deriv_z(const block_view_t *neighborhood, int32_t x, int32_t y, int32_t z, int32_t cube_width, FP d2inv){
+    const block_view_t center = neighborhood[NEIGHBOR_IDX(0, 0, 0)];
+    const int32_t base_idx = x + y * center.ldy + z * center.ldz;
 
-#endif
+    if(z < STENCIL_RADIUS){
+        const block_view_t front = neighborhood[NEIGHBOR_IDX(0, 0, -1)];
+        const int32_t border_idx = x + y * front.ldy + (STENCIL_RADIUS - 1) * front.ldz;
+        return snd_deriv_neg_impl(center.ptr, front.ptr, z, base_idx, center.ldz, border_idx, front.ldz, d2inv);
+    }else{
+        const block_view_t back = neighborhood[NEIGHBOR_IDX(0, 0, +1)];
+        const int32_t border_idx = x + y * back.ldy;
+        return snd_deriv_pos_impl(center.ptr, back.ptr, cube_width - 1 - z, base_idx, center.ldz, border_idx, back.ldz, d2inv);
+    }
+}
 
 #endif /* CODE_IMPL */
+
+#endif /* _DERIVATIVES_GUARD_ */

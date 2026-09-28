@@ -9,6 +9,7 @@ result
 # test files
 *.log
 *.out
+*.d
 *.txt
 *.txt@
 *.o
