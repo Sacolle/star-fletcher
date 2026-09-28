@@ -19,6 +19,11 @@
 #define DEFAULT_OUTPUT_FOLDER "results"
 #define DEFAULT_OUTPUT_NAME "form"
 
+// limite padrão de tarefas submetidas (veja o README): ao passar de MAX tarefas pendentes,
+// a submissão espera até restarem MIN. Passados ao StarPU como variáveis de ambiente.
+#define DEFAULT_LIMIT_MAX_SUBMITTED_TASKS "200000"
+#define DEFAULT_LIMIT_MIN_SUBMITTED_TASKS "180000"
+
 // 1, 3, 7
 #define WAVE_PROPAGATION_CENTER  0
 #define WAVE_PROPAGATION_SURFACE 1
@@ -405,6 +410,13 @@ int main(int argc, char **argv){
     char bin_filename[512] = {'\0'};
     sprintf(bin_filename, "%s/out-%s.rsf@", output_folder, output_filename);
     printf("bin filename %s\n", bin_filename);
+
+    // Sem limite, a submissão corre muito à frente da execução e as tarefas internas das
+    // partições esgotam a memória em volumes grandes. setenv(..., 0) só define a variável se ela
+    // não existir, então valores exportados pelo usuário têm prioridade; o StarPU as lê no
+    // starpu_init (STARPU_LIMIT_MAX_SUBMITTED_TASKS=-1 desliga o limite).
+    setenv("STARPU_LIMIT_MAX_SUBMITTED_TASKS", DEFAULT_LIMIT_MAX_SUBMITTED_TASKS, 0);
+    setenv("STARPU_LIMIT_MIN_SUBMITTED_TASKS", DEFAULT_LIMIT_MIN_SUBMITTED_TASKS, 0);
 
     int ret = starpu_init(NULL);
     STARPU_CHECK_RETURN_VALUE(ret, "starpu_init");

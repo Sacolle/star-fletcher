@@ -124,12 +124,20 @@
         };
 
         star-fletcher-cpu-lattest = pkgs.callPackage ./star-fletcher.nix {
-            cudaPackages = cudaPacks;
-            enableCUDA = true;
+            enableCUDA = false;
             enableTrace = false;
-            disableCPUKernel = true;
             compileAsRelease = true;
-            stdenv = cudapkgs.gcc12Stdenv;
+            stdenv = pkgs.gcc13Stdenv;
+            StarPU = StarPU.packages.${system}.default.overrideAttrs {
+                version = "latest";
+                src = pkgs.fetchFromGitLab {
+                    domain = "gitlab.inria.fr";
+                    owner = "starpu";
+                    repo = "starpu";
+                    rev = "3b258cb620de7610f0b6fadaae959f1e173f0e34";
+                    hash = "sha256-p/5u0tGrVo3nUtcmfrYMIyinB4SpR3aT3+S6ztRzbbc=";
+                };
+            };
         };
 
         nixglhost = nix-gl-host.defaultPackage.${system};
@@ -226,8 +234,8 @@
             };
         };
         packages = {
-          default = star-fletcher;
-          inherit star-fletcher star-fletcher-cuda star-fletcher-cuda-no-cpu-kernel star-fletcher-cuda-trace kernel-test;
+          default = star-fletcher-cpu-lattest;
+          inherit star-fletcher star-fletcher-cuda star-fletcher-cuda-no-cpu-kernel star-fletcher-cuda-trace kernel-test star-fletcher-cpu-lattest;
         };
     });
 }
