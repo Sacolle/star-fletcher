@@ -54,6 +54,11 @@ ifeq ($(CUDA_BACKEND), 1)
     else
 	    NVCCFLAGS += -O0 -g
     endif
+
+    # bit-exact validation against the CPU: no fused multiply-add on the GPU
+    ifeq ($(CUDA_EXACT), 1)
+	    NVCCFLAGS += -fmad=false
+    endif
 endif
 
 ARGS = TTI 200 200 200 8 12.5 12.5 12.5 0.0001 0.001 4 0.0005
@@ -76,7 +81,7 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@ -I $(INCLUDEDIR)
 
-$(OBJDIR)/cuda_kernel.o: $(CUDADIR)/kernel.cu $(SRCDIR)/derivatives/derivatives-impl.h $(CROSS_DERIV_GEN)
+$(OBJDIR)/cuda_kernel.o: $(CUDADIR)/kernel.cu $(SRCDIR)/derivatives/derivatives-impl.h $(INCLUDEDIR)/wave-neighborhood.h $(CROSS_DERIV_GEN)
 	@mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@ -I $(INCLUDEDIR)
 

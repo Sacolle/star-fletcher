@@ -123,6 +123,14 @@
             stdenv = cudapkgs.gcc12Stdenv;
         };
 
+        lattest-src-starpu = pkgs.fetchFromGitLab {
+            domain = "gitlab.inria.fr";
+            owner = "starpu";
+            repo = "starpu";
+            rev = "3b258cb620de7610f0b6fadaae959f1e173f0e34";
+            hash = "sha256-p/5u0tGrVo3nUtcmfrYMIyinB4SpR3aT3+S6ztRzbbc=";
+        };
+
         star-fletcher-cpu-lattest = pkgs.callPackage ./star-fletcher.nix {
             enableCUDA = false;
             enableTrace = false;
@@ -130,13 +138,7 @@
             stdenv = pkgs.gcc13Stdenv;
             StarPU = StarPU.packages.${system}.default.overrideAttrs {
                 version = "latest";
-                src = pkgs.fetchFromGitLab {
-                    domain = "gitlab.inria.fr";
-                    owner = "starpu";
-                    repo = "starpu";
-                    rev = "3b258cb620de7610f0b6fadaae959f1e173f0e34";
-                    hash = "sha256-p/5u0tGrVo3nUtcmfrYMIyinB4SpR3aT3+S6ztRzbbc=";
-                };
+                src = lattest-src-starpu;
             };
         };
 
@@ -152,12 +154,19 @@
     {
         devShells = {
           default = baseShell starpu-cuda {};
+
+          cuda-lattest = baseShell (starpu-cuda.overrideAttrs { 
+            version = "latest";
+            src = lattest-src-starpu;
+          }) {};
+
           no-cuda = baseShell (StarPU.packages.${system}.default.override {
             	enableCUDA = false;
 	            compileAsRelease = true;
 	            enableTrace = false;
             	maxBuffers = 56;
 	        }) {};
+
           no-cuda-lattest = baseShell ((StarPU.packages.${system}.default.override {
             	enableCUDA = false;
 	            compileAsRelease = true;
@@ -166,13 +175,7 @@
                 stdenv = pkgs.gcc13Stdenv;
 	        }).overrideAttrs {
                 version = "latest";
-                src = pkgs.fetchFromGitLab {
-                    domain = "gitlab.inria.fr";
-                    owner = "starpu";
-                    repo = "starpu";
-                    rev = "3b258cb620de7610f0b6fadaae959f1e173f0e34";
-                    hash = "sha256-p/5u0tGrVo3nUtcmfrYMIyinB4SpR3aT3+S6ztRzbbc=";
-                };
+                src = lattest-src-starpu;
             }) {};
             /*
           eztrace-test = pkgs.mkShell {

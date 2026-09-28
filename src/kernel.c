@@ -4,6 +4,7 @@
 #include "floatingpoint.h"
 #include "macros.h"
 #include "derivatives.h"
+#include "wave-neighborhood.h"
 #include <errno.h>
 
 
@@ -36,36 +37,6 @@ err_t make_perturb_args(perturb_args_t** perturb_args, const size_t idx, const F
     (*perturb_args)->perturb_value = value;
     (*perturb_args)->t = t;
     return 0;
-}
-
-// translating the submission order of the task to the neighborhood patter
-#define WAVE_NEIGHBOR_BUFFERS 19
-static const int8_t wave_neighbor_offsets[WAVE_NEIGHBOR_BUFFERS][3] = {
-    { 0,  0,  0},
-    // layer k - 1
-    { 0,  0, -1}, { 0, -1, -1}, {-1,  0, -1}, {+1,  0, -1}, { 0, +1, -1},
-    // layer k
-    {-1, -1,  0}, { 0, -1,  0}, {+1, -1,  0}, {-1,  0,  0},
-    {+1,  0,  0}, {-1, +1,  0}, { 0, +1,  0}, {+1, +1,  0},
-    // layer k + 1
-    { 0,  0, +1}, { 0, -1, +1}, {-1,  0, +1}, {+1,  0, +1}, { 0, +1, +1},
-};
-
-// Builds the neighborhood table of one wave from its WAVE_NEIGHBOR_BUFFERS buffers
-// starting at descr[first_buffer]. Unused entries (the corners) are left zeroed.
-static void fill_wave_neighborhood(block_view_t neighborhood[NEIGHBORHOOD_SIZE], void *descr[], int first_buffer){
-    for(int i = 0; i < NEIGHBORHOOD_SIZE; i++){
-        neighborhood[i] = (block_view_t){ 0 };
-    }
-    for(int i = 0; i < WAVE_NEIGHBOR_BUFFERS; i++){
-        void *buffer = descr[first_buffer + i];
-        const int8_t *offset = wave_neighbor_offsets[i];
-        neighborhood[NEIGHBOR_IDX(offset[0], offset[1], offset[2])] = (block_view_t){
-            .ptr = (const FP*) STARPU_BLOCK_GET_PTR(buffer),
-            .ldy = (int32_t) STARPU_BLOCK_GET_LDY(buffer),
-            .ldz = (int32_t) STARPU_BLOCK_GET_LDZ(buffer),
-        };
-    }
 }
 
 void rtm_kernel(void *descr[], void *cl_args){

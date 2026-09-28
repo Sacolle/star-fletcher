@@ -39,6 +39,25 @@ Outra possibilidade é utilizar `starpu_task_wait_for_n_submitted()` para que o 
 bloqueie depois de submeter `n` tarefas, limitando em iterações em vez de tarefas.
 
 
+### GPU (CUDA)
+
+A partição dos cubos precisa do StarPU master (no 1.4.12 o resultado sai errado), então a versão
+CUDA é compilada no shell `cuda-lattest`:
+
+```bash
+nix develop .#cuda-lattest
+make CUDA_BACKEND=1 RELEASE_MODE=1                  # kernel na CPU e na GPU
+make CUDA_BACKEND=1 RELEASE_MODE=1 NO_CPU_KERNEL=1  # tarefas RTM só na GPU
+```
+
+`ARCH` escolhe o `-arch` do nvcc (padrão `native`, que precisa de uma GPU na máquina que compila).
+`CUDA_EXACT=1` compila sem FMA (`-fmad=false`), para que a GPU faça as mesmas operações que a CPU e
+a saída seja bit a bit igual. As tarefas de perturbação e de escrita só existem na CPU, então rode
+com pelo menos um worker de CPU (`STARPU_NCPU=1 STARPU_NCUDA=1`).
+
+`scripts/validate-gpu.sh` compara a GPU com a CPU nos casos de referência: MD5 idêntico no build
+exato e diferença máxima frame a frame no build normal.
+
 ## Uso no Emacs
 
 Agora foi adicionado dois arquivos,
