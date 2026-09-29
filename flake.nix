@@ -155,10 +155,12 @@
         devShells = {
           default = baseShell starpu-cuda {};
 
-          cuda-lattest = baseShell (starpu-cuda.overrideAttrs { 
+          # nixglhost: runs a command with the host's GPU driver visible (needed on non-NixOS
+          # machines for nvcc's GPU detection and for StarPU to find the GPU)
+          cuda-lattest = (baseShell (starpu-cuda.overrideAttrs {
             version = "latest";
             src = lattest-src-starpu;
-          }) {};
+          }) {}).overrideAttrs (old: { buildInputs = old.buildInputs ++ [ nixglhost ]; });
 
           no-cuda = baseShell (StarPU.packages.${system}.default.override {
             	enableCUDA = false;

@@ -50,13 +50,29 @@ make CUDA_BACKEND=1 RELEASE_MODE=1                  # kernel na CPU e na GPU
 make CUDA_BACKEND=1 RELEASE_MODE=1 NO_CPU_KERNEL=1  # tarefas RTM só na GPU
 ```
 
-`ARCH` escolhe o `-arch` do nvcc (padrão `native`, que precisa de uma GPU na máquina que compila).
-`CUDA_EXACT=1` compila sem FMA (`-fmad=false`), para que a GPU faça as mesmas operações que a CPU e
-a saída seja bit a bit igual. As tarefas de perturbação e de escrita só existem na CPU, então rode
-com pelo menos um worker de CPU (`STARPU_NCPU=1 STARPU_NCUDA=1`).
+`ARCH` escolhe o `-arch` do nvcc (ex. `ARCH=sm_80`). Sem ele, o Makefile usa a compute capability
+da GPU visível (`nvidia-smi`) e para com erro se não achar nenhuma, em vez de compilar para uma
+arquitetura antiga como faz o `-arch=native` do nvcc. O kernel precisa de sm_70 ou mais novo. Para
+o `nix build` dos pacotes CUDA (sem GPU no sandbox), passe `cuda_arch = "sm_XX"` no `star-fletcher.nix`.
 
-`scripts/validate-gpu.sh` compara a GPU com a CPU nos casos de referência: MD5 idêntico no build
-exato e diferença máxima frame a frame no build normal.
+Dentro do `nix develop` numa máquina que não é NixOS, o driver da GPU do sistema (`libcuda.so`) não
+fica visível: o StarPU não encontra a GPU (as tarefas RTM falham com `No such device` quando o kernel
+de CPU está desligado). Rode o programa pelo `nixglhost`, incluído no shell `cuda-lattest`; no NixOS,
+use `LD_LIBRARY_PATH=/run/opengl-driver/lib`:
+
+```bash
+STARPU_NCPU=1 STARPU_NCUDA=1 nixglhost ./main TTI ...
+```
+
+As tarefas de perturbação e de escrita só existem na CPU, então rode com pelo menos um worker de CPU.
+
+`EXACT_FP=1` compila sem fused multiply-add na CPU (`-ffp-contract=off`) e na GPU (`-fmad=false`),
+para que as duas façam as mesmas operações e a saída seja bit a bit igual. Os MD5 de referência
+foram gravados em x86-64, onde o gcc não funde operações; em aarch64 ele funde por padrão e a libm é
+outra, então lá os MD5 são diferentes. Por isso as comparações são feitas na mesma máquina.
+
+`scripts/validate-gpu.sh` compara, na mesma máquina, a CPU (`EXACT_FP=1`) com a GPU: MD5 idêntico no
+build exato e diferença máxima frame a frame no build normal.
 
 ## Uso no Emacs
 

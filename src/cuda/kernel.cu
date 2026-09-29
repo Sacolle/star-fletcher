@@ -2,6 +2,11 @@
 #include <starpu.h>
 #include "kernel.h"
 
+// __grid_constant__ (the kernel parameter below) needs compute capability 7.0 or newer
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
+#error "star-fletcher's CUDA kernel needs compute capability 7.0+ (__grid_constant__): build with ARCH=sm_70 or newer"
+#endif
+
 extern size_t g_cuda_thread_x, g_cuda_thread_y, g_cuda_thread_z;
 
 #define DESCR_COUNT 52

@@ -19,6 +19,12 @@ ifeq ($(NO_CPU_KERNEL), 1)
 	CFLAGS += -DNO_CPU_KERNEL
 endif
 
+# bit-exact CPU vs GPU validation: no fused multiply-add on either side (on aarch64 gcc fuses by
+# default; on x86-64 without -march it doesn't, so there this changes nothing)
+ifeq ($(EXACT_FP), 1)
+	CFLAGS += -ffp-contract=off
+endif
+
 export PARENT_DIR := $(CURDIR)
 
 BIN = main
@@ -38,13 +44,19 @@ OBJS := $(patsubst $(SRCDIR)/%.c, $(OBJDIR)/%.o,$(SRCS))
 
 CUDADIR = $(SRCDIR)/cuda
 CUDAOBJS = $(OBJDIR)/cuda_kernel.o
-# set to native, but can be changed on the system
-ARCH ?= native
-
 ifeq ($(CUDA_BACKEND), 1)
     CFLAGS += -DCUDA_BACKEND
     OBJS += $(CUDAOBJS)
     LDLIBS += -lcudart
+
+    # GPU architecture for nvcc: ARCH=sm_XX, or the compute capability of the visible GPU.
+    # (nvcc's -arch=native silently falls back to an old default when it can't reach the driver.)
+    ifndef ARCH
+        ARCH := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .' | sed 's/^/sm_/')
+    endif
+    ifeq ($(strip $(ARCH)),)
+        $(error No GPU visible to detect the CUDA architecture (nvidia-smi); set it, e.g. make CUDA_BACKEND=1 ARCH=sm_80)
+    endif
 
     NVCC = nvcc
     NVCCFLAGS = $(STARPU_CFLAGS) -arch=$(ARCH)
@@ -55,8 +67,7 @@ ifeq ($(CUDA_BACKEND), 1)
 	    NVCCFLAGS += -O0 -g
     endif
 
-    # bit-exact validation against the CPU: no fused multiply-add on the GPU
-    ifeq ($(CUDA_EXACT), 1)
+    ifeq ($(EXACT_FP), 1)
 	    NVCCFLAGS += -fmad=false
     endif
 endif
