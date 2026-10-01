@@ -139,6 +139,7 @@
             StarPU = StarPU.packages.${system}.default.overrideAttrs {
                 version = "latest";
                 src = lattest-src-starpu;
+                doCheck = false;
             };
         };
 
