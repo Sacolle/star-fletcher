@@ -49,15 +49,6 @@ ifeq ($(CUDA_BACKEND), 1)
     OBJS += $(CUDAOBJS)
     LDLIBS += -lcudart
 
-    # GPU architecture for nvcc: ARCH=sm_XX, or the compute capability of the visible GPU.
-    # (nvcc's -arch=native silently falls back to an old default when it can't reach the driver.)
-    ifndef ARCH
-        ARCH := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .' | sed 's/^/sm_/')
-    endif
-    ifeq ($(strip $(ARCH)),)
-        $(error No GPU visible to detect the CUDA architecture (nvidia-smi); set it, e.g. make CUDA_BACKEND=1 ARCH=sm_80)
-    endif
-
     NVCC = nvcc
     NVCCFLAGS = $(STARPU_CFLAGS) -arch=$(ARCH)
 

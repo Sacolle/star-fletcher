@@ -11,7 +11,7 @@
     autoAddDriverRunpath, #
 
     enableCUDA ? false,
-    cuda_arch ? "",
+    cuda_arch ? "sm_75",
     disableCPUKernel ? false,
     enableTrace ? false,
     compileAsRelease ? true
@@ -51,7 +51,7 @@ stdenv.mkDerivation {
     ++ lib.optional disableCPUKernel "NO_CPU_KERNEL=1" 
     ++ lib.optionals enableCUDA [
       "CUDA_BACKEND=1 "
-      (if cuda_arch != "" then "ARCH=${cuda_arch}" else " ")
+      "ARCH=${cuda_arch}"
     ];
 
     installPhase = "mkdir -p $out/bin && cp main $out/bin/star-fletcher";
