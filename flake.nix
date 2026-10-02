@@ -140,7 +140,7 @@
                 version = "latest";
                 src = lattest-src-starpu;
                 doCheck = false;
-            });
+            };
         };
 
         nixglhost = nix-gl-host.defaultPackage.${system};
