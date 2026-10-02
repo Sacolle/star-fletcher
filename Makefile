@@ -47,7 +47,7 @@ CUDAOBJS = $(OBJDIR)/cuda_kernel.o
 ifeq ($(CUDA_BACKEND), 1)
     CFLAGS += -DCUDA_BACKEND
     OBJS += $(CUDAOBJS)
-    LDLIBS += -lcudart
+    LDLIBS += -lcudart -lstdc++
 
     NVCC = nvcc
     NVCCFLAGS = $(STARPU_CFLAGS) -arch=$(ARCH)

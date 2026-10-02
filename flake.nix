@@ -127,8 +127,8 @@
             domain = "gitlab.inria.fr";
             owner = "starpu";
             repo = "starpu";
-            rev = "3b258cb620de7610f0b6fadaae959f1e173f0e34";
-            hash = "sha256-p/5u0tGrVo3nUtcmfrYMIyinB4SpR3aT3+S6ztRzbbc=";
+            rev = "a4e07ed21baa4a92f1c81636bf6c457aa08ae731";
+            hash = "sha256-KE2Pzb/wh/9V0Fd6Od//cz08dE3H6F+Kki9fRhWwt7A=";
         };
 
         star-fletcher-cpu-lattest = pkgs.callPackage ./star-fletcher.nix {
