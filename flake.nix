@@ -136,11 +136,11 @@
             enableTrace = false;
             compileAsRelease = true;
             stdenv = pkgs.gcc13Stdenv;
-            StarPU = StarPU.packages.${system}.default.overrideAttrs {
+            StarPU = (StarPU.packages.${system}.default.override { enableVerbose = false; }).overrideAttrs {
                 version = "latest";
                 src = lattest-src-starpu;
                 doCheck = false;
-            };
+            });
         };
 
         nixglhost = nix-gl-host.defaultPackage.${system};
