@@ -1,0 +1,59 @@
+diff -ru a/src/drivers/cuda/driver_cuda1.c b/src/drivers/cuda/driver_cuda1.c
+--- a/src/drivers/cuda/driver_cuda1.c	2026-10-16 17:14:53.997192397 -0300
++++ b/src/drivers/cuda/driver_cuda1.c	2026-10-16 17:14:54.004149226 -0300
+@@ -401,7 +401,12 @@
+ 	if (STARPU_UNLIKELY(cures))
+ 		STARPU_CUDA_REPORT_ERROR(cures);
+ #ifdef STARPU_HAVE_CUDA_MEMCPY_PEER
+-	if (props[devid].computeMode == cudaComputeModeExclusive)
++	/* cudaDeviceProp::computeMode was removed in CUDA 13, query it as an attribute instead */
++	int compute_mode;
++	cures = cudaDeviceGetAttribute(&compute_mode, cudaDevAttrComputeMode, devid);
++	if (STARPU_UNLIKELY(cures))
++		STARPU_CUDA_REPORT_ERROR(cures);
++	if (compute_mode == cudaComputeModeExclusive)
+ 	{
+ 		_STARPU_MSG("CUDA is in EXCLUSIVE-THREAD mode, but StarPU was built with multithread GPU control support, please either ask your administrator to use EXCLUSIVE-PROCESS mode (which should really be fine), or reconfigure with --disable-cuda-memcpy-peer but that will disable the memcpy-peer optimizations\n");
+ 		STARPU_ABORT();
+diff -ru a/src/drivers/cuda/driver_cuda.c b/src/drivers/cuda/driver_cuda.c
+--- a/src/drivers/cuda/driver_cuda.c	2026-10-16 17:14:53.993322822 -0300
++++ b/src/drivers/cuda/driver_cuda.c	2026-10-16 17:14:54.001690136 -0300
+@@ -855,7 +855,12 @@
+ 	if (STARPU_UNLIKELY(cures))
+ 		STARPU_CUDA_REPORT_ERROR(cures);
+ #ifdef STARPU_HAVE_CUDA_MEMCPY_PEER
+-	if (props[devid].computeMode == cudaComputeModeExclusive)
++	/* cudaDeviceProp::computeMode was removed in CUDA 13, query it as an attribute instead */
++	int compute_mode;
++	cures = cudaDeviceGetAttribute(&compute_mode, cudaDevAttrComputeMode, devid);
++	if (STARPU_UNLIKELY(cures))
++		STARPU_CUDA_REPORT_ERROR(cures);
++	if (compute_mode == cudaComputeModeExclusive)
+ 	{
+ 		_STARPU_MSG("CUDA is in EXCLUSIVE-THREAD mode, but StarPU was built with multithread GPU control support, please either ask your administrator to use EXCLUSIVE-PROCESS mode (which should really be fine), or reconfigure with --disable-cuda-memcpy-peer but that will disable the memcpy-peer optimizations\n");
+ 		STARPU_ABORT();
+diff -ru a/starpufft/src/starpufftx.c b/starpufft/src/starpufftx.c
+--- a/starpufft/src/starpufftx.c	2026-10-16 17:17:17.091895430 -0300
++++ b/starpufft/src/starpufftx.c	2026-10-16 17:17:17.094589923 -0300
+@@ -518,15 +518,18 @@
+ 		errormsg = "unaligned data";
+ 		break;
+ #if defined(MAX_CUFFT_ERROR) && (MAX_CUFFT_ERROR >= 0xE)
++	/* CUFFT_INCOMPLETE_PARAMETER_LIST and CUFFT_PARSE_ERROR were removed in cuFFT 12 (CUDA 13) */
++#if !defined(CUFFT_VERSION) || CUFFT_VERSION < 12000
+ 	case CUFFT_INCOMPLETE_PARAMETER_LIST:
+ 		errormsg = "incomplete parameter list";
+ 		break;
+-	case CUFFT_INVALID_DEVICE:
+-		errormsg = "invalid device";
+-		break;
+ 	case CUFFT_PARSE_ERROR:
+ 		errormsg = "parse error";
+ 		break;
++#endif
++	case CUFFT_INVALID_DEVICE:
++		errormsg = "invalid device";
++		break;
+ 	case CUFFT_NO_WORKSPACE:
+ 		errormsg = "no workspace";
+ 		break;

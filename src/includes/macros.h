@@ -42,6 +42,13 @@ static inline size_t block_idx(size_t i, size_t j, size_t k){
     return idx(i, j, k, g_width_in_cubes);
 }
 
+// the linear index of the block(i,j,k) in the padded handle arrays (one halo cube per side)
+// dependes on the global variable `g_width_in_cubes`;
+static inline size_t padded_block_idx(size_t i, size_t j, size_t k){
+    extern size_t g_width_in_cubes;
+    return idx(i, j, k, g_width_in_cubes + 2);
+}
+
 // the linear index for a point (vx, vy, vz) in the whole volume
 // dependes on the global variable `g_volume_width`;
 static inline size_t volume_idx(size_t vx, size_t vy, size_t vz){
@@ -77,7 +84,22 @@ static inline size_t volume_to_block_idx(size_t idx){
     return block_idx(vx / g_cube_width, vy / g_cube_width, vz / g_cube_width);
 }
 
-// turn a global volume linear index into a the index inside its corresponding block 
+// turn a global volume linear idx into a the index of the block that point correspondes,
+// in the padded handle arrays (shifted by one halo cube in every direction)
+// depends on `g_cube_width`, `g_width_in_cubes` and `g_volume_width`
+static inline size_t volume_to_padded_block_idx(size_t idx){
+    extern size_t g_volume_width;
+    extern size_t g_cube_width;
+
+    const struct coords3d c = unindex(idx, g_volume_width);
+    const size_t vx = c.x;
+    const size_t vy = c.y;
+    const size_t vz = c.z;
+
+    return padded_block_idx(vx / g_cube_width + 1, vy / g_cube_width + 1, vz / g_cube_width + 1);
+}
+
+// turn a global volume linear index into a the index inside its corresponding block
 // depends on `g_cube_width` and `g_volume_width`
 static inline size_t volume_to_cube_idx(size_t idx){
     extern size_t g_volume_width;

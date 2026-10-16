@@ -37,7 +37,8 @@ ARCH ?= native
 ifeq ($(CUDA_BACKEND), 1)
     CFLAGS += -DCUDA_BACKEND
     OBJS += $(CUDAOBJS)
-    LDLIBS += -lcudart
+    # the nvcc object needs the C++ runtime, which gcc does not link by default
+    LDLIBS += -lcudart -lstdc++
 
     NVCC = nvcc
     NVCCFLAGS = $(STARPU_CFLAGS) -arch=$(ARCH)
@@ -56,7 +57,7 @@ ARGS = TTI 200 200 200 8 12.5 12.5 12.5 0.0001 0.001 4 0.0005
 all: $(BIN)
 
 $(BIN): $(OBJS)
-	$(CC) $(CFLAGS) $(LDLIBS) $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
 
 

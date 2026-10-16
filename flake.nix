@@ -16,27 +16,30 @@
             inputs.nixpkgs.follows = "nixpkgs";
         };
 
-        # gets the proper version of the CUDA packages for compilation
-        cudaNixpkgs.url = "github:nixos/nixpkgs/1da52dd49a127ad74486b135898da2cef8c62665";
         #madagascar.url = "github:Sacolle/nix-madagascar";
         flake-utils.url = "github:numtide/flake-utils";
     };
 
-    outputs = { self, nixpkgs, cudaNixpkgs, StarPU, eztrace, /* madagascar,*/ nix-gl-host, flake-utils }: 
+    outputs = { self, nixpkgs, StarPU, eztrace, /* madagascar,*/ nix-gl-host, flake-utils }: 
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
     let 
         pkgsconfigs = { 
             inherit system; 
             config.allowUnfree = true;
         };
-        # import gcc13Stdenv from this because it uses the correct version of glibc (2.40-36)
-        cudapkgs = import cudaNixpkgs pkgsconfigs;
-
-        cudaPacks = cudapkgs.cudaPackages_12_2;
-
         pkgs = import nixpkgs pkgsconfigs;
 
-        baseShell = StarPUVersion: extraArgs: pkgs.mkShell.override { stdenv = pkgs.gcc13Stdenv; } (rec {
+        cudaPacks = pkgs.cudaPackages_13_0;
+        # the host compiler supported by this CUDA version (nvcc rejects newer gcc's)
+        cudaStdenv = cudaPacks.backendStdenv;
+
+        # StarPU 1.4.12 uses cudaDeviceProp::computeMode and two cuFFT error codes, all removed in CUDA 13.
+        # starpu.nix overrides patchPhase, so `patches` would be ignored: apply it there instead
+        starpu-base = StarPU.packages.${system}.default.overrideAttrs (old: {
+            patchPhase = "patch -p1 < ${./patches/starpu-cuda13.patch}\n" + old.patchPhase;
+        });
+
+        baseShell = shellStdenv: StarPUVersion: extraArgs: pkgs.mkShell.override { stdenv = shellStdenv; } (rec {
             buildInputs = with pkgs; [
                 pkg-config
                 bear # for emacs eglot
@@ -59,7 +62,7 @@
                 python313Packages.numpy
 
                 #madagascar.packages.${system}.default
-            ] ++ (with cudapkgs.cudaPackages; [ 
+            ] ++ (with cudaPacks; [ 
                 cuda_nvcc
                 cuda_cudart
                 cuda_cccl
@@ -76,51 +79,51 @@
             CRITERION_STORE_PATH =   "${pkgs.criterion.dev}/include/";
             HWLOC_STORE_PATH =       "${pkgs.hwloc.dev}/include";
             # cudas
-            CUDART_STORE_PATH =      "${cudapkgs.cudaPackages.cuda_cudart.dev}/include/";
-            NVCC_STORE_PATH =        "${cudapkgs.cudaPackages.cuda_nvcc}/include/";
-            NVML_STORE_PATH =        "${cudapkgs.cudaPackages.cuda_nvml_dev.dev}/include/";
-            LIBCUSPARSE_STORE_PATH = "${cudapkgs.cudaPackages.libcusparse.dev}/include/";
+            CUDART_STORE_PATH =      "${pkgs.lib.getInclude cudaPacks.cuda_cudart}/include/";
+            NVCC_STORE_PATH =        "${cudaPacks.cuda_nvcc}/include/";
+            NVML_STORE_PATH =        "${pkgs.lib.getInclude cudaPacks.cuda_nvml_dev}/include/";
+            LIBCUSPARSE_STORE_PATH = "${pkgs.lib.getInclude cudaPacks.libcusparse}/include/";
         } // extraArgs);
 
         star-fletcher = pkgs.callPackage ./star-fletcher.nix {
-            StarPU = StarPU.packages.${system}.default;
+            StarPU = starpu-base;
         };
 
-        starpu-cuda = StarPU.packages.${system}.default.override {
+        starpu-cuda = starpu-base.override {
             	enableCUDA = true;
 	        compileAsRelease = true;
 	        enableTrace = false;
             	maxBuffers = 56;
 	        cudaPackages = cudaPacks;
-	        stdenv = cudapkgs.gcc12Stdenv;
+	        stdenv = cudaStdenv;
 	    };
 
         star-fletcher-cuda = pkgs.callPackage ./star-fletcher.nix {
-            StarPU = StarPU.packages.${system}.default; #starpu-cuda;
+            StarPU = starpu-base; #starpu-cuda;
             cudaPackages = cudaPacks;
             enableCUDA = true;
             enableTrace = false;
             compileAsRelease = true;
-            stdenv = cudapkgs.gcc12Stdenv;
+            stdenv = cudaStdenv;
         };
 
         star-fletcher-cuda-trace = pkgs.callPackage ./star-fletcher.nix {
-            StarPU = StarPU.packages.${system}.default; #starpu-cuda;
+            StarPU = starpu-base; #starpu-cuda;
             cudaPackages = cudaPacks;
             enableCUDA = true;
             enableTrace = true;
             compileAsRelease = true;
-            stdenv = cudapkgs.gcc12Stdenv;
+            stdenv = cudaStdenv;
         };
 
         star-fletcher-cuda-no-cpu-kernel = pkgs.callPackage ./star-fletcher.nix {
-            StarPU = StarPU.packages.${system}.default; #starpu-cuda;
+            StarPU = starpu-base; #starpu-cuda;
             cudaPackages = cudaPacks;
             enableCUDA = true;
             enableTrace = false;
             disableCPUKernel = true;
             compileAsRelease = true;
-            stdenv = cudapkgs.gcc12Stdenv;
+            stdenv = cudaStdenv;
         };
 
         nixglhost = nix-gl-host.defaultPackage.${system};
@@ -128,14 +131,14 @@
         kernel-test = pkgs.callPackage ./tests/kernel-opt/kernel-test.nix {
 	    root = self;
             compileAsRelease = true;
-            stdenv = cudapkgs.gcc12Stdenv;
+            stdenv = cudaStdenv;
             cudaPackages = cudaPacks;
         };
     in
     {
         devShells = {
-          default = baseShell starpu-cuda {};
-          no-cuda = baseShell (StarPU.packages.${system}.default.override {
+          default = baseShell cudaStdenv starpu-cuda {};
+          no-cuda = baseShell pkgs.gcc13Stdenv (starpu-base.override {
             	enableCUDA = false;
 	            compileAsRelease = true;
 	            enableTrace = false;
@@ -164,18 +167,18 @@
                     pkgs.gdb
                 ];
             };*/
-            cuda-test = pkgs.mkShell.override { stdenv = cudapkgs.gcc12Stdenv; } {
+            cuda-test = pkgs.mkShell.override { stdenv = cudaStdenv; } {
                 buildInputs = [ 
                     pkgs.python313
                     pkgs.pkg-config
                     pkgs.hwloc
 
-                    pkgs.cudaPackages.cuda_gdb
+                    cudaPacks.cuda_gdb
                     starpu-cuda
                     #pkgs.gdb
                     nixglhost 
                     cudaPacks.cuda_cuobjdump
-		    pkgs.cudaPackages_13.nsight_compute
+		    cudaPacks.nsight_compute
                 ] ++ (with cudaPacks; [
                     cuda_nvcc
                 ]);

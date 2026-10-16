@@ -8,11 +8,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1785420733,
-        "narHash": "sha256-KozN+jf58fepiloKHsvrPTmFcw1pBT8tKNwZr/RSQOU=",
+        "lastModified": 1789579812,
+        "narHash": "sha256-Pf5HM43tpaiLqYPW0pVnKc3+vf+6RuXM4+7wOMKZKJU=",
         "owner": "Sacolle",
         "repo": "nix-starpu",
-        "rev": "3925d1fb0cc7dec05b69172097e5917c03adbbaa",
+        "rev": "3e05ad299208df0c40f6d2bac7a207c5be0e0fa4",
         "type": "github"
       },
       "original": {
@@ -39,22 +39,6 @@
       "original": {
         "owner": "Sacolle",
         "repo": "nix-starpu",
-        "type": "github"
-      }
-    },
-    "cudaNixpkgs": {
-      "locked": {
-        "lastModified": 1738797219,
-        "narHash": "sha256-KRwX9Z1XavpgeSDVM/THdFd6uH8rNm/6R+7kIbGa+2s=",
-        "owner": "nixos",
-        "repo": "nixpkgs",
-        "rev": "1da52dd49a127ad74486b135898da2cef8c62665",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nixos",
-        "repo": "nixpkgs",
-        "rev": "1da52dd49a127ad74486b135898da2cef8c62665",
         "type": "github"
       }
     },
@@ -155,7 +139,6 @@
     "root": {
       "inputs": {
         "StarPU": "StarPU",
-        "cudaNixpkgs": "cudaNixpkgs",
         "eztrace": "eztrace",
         "flake-utils": "flake-utils_2",
         "nix-gl-host": "nix-gl-host",
