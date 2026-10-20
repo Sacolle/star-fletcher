@@ -37,6 +37,9 @@
         # starpu.nix overrides patchPhase, so `patches` would be ignored: apply it there instead
         starpu-base = StarPU.packages.${system}.default.overrideAttrs (old: {
             patchPhase = "patch -p1 < ${./patches/starpu-cuda13.patch}\n" + old.patchPhase;
+            # with --enable-fast the asserts are gone, so the MPI tests that expect an abort
+            # (policy_register_toomany, policy_unregister, starpu_redefine) XPASS and fail the check
+            configureFlags = old.configureFlags ++ [ "--disable-mpi-check" ];
         });
 
         baseShell = shellStdenv: StarPUVersion: extraArgs: pkgs.mkShell.override { stdenv = shellStdenv; } (rec {
@@ -94,6 +97,7 @@
 	        compileAsRelease = true;
 	        enableTrace = false;
             	maxBuffers = 56;
+	        enableMPI = true;
 	        cudaPackages = cudaPacks;
 	        stdenv = cudaStdenv;
 	    };
@@ -143,6 +147,7 @@
 	            compileAsRelease = true;
 	            enableTrace = false;
             	maxBuffers = 56;
+	        enableMPI = true;
 	        }) {};
             /*
           eztrace-test = pkgs.mkShell {

@@ -27,6 +27,7 @@ let
         inherit stdenv;
         inherit enableTrace enableCUDA compileAsRelease;
         maxBuffers = 56;
+        enableMPI = true;
     };
 in
 stdenv.mkDerivation {

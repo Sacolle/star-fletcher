@@ -1,6 +1,8 @@
 
-export STARPU_CFLAGS := $(shell pkg-config --cflags starpu-1.4)
-export STARPU_LDLIBS := $(shell pkg-config --libs starpu-1.4)
+export STARPU_CFLAGS := $(shell pkg-config --cflags starpumpi-1.4)
+export STARPU_LDLIBS := $(shell pkg-config --static --libs starpumpi-1.4)
+
+CC := mpicc
 
 CFLAGS := $(STARPU_CFLAGS) -Wall -fopenmp
 LDLIBS += $(STARPU_LDLIBS) -lm -lc 
@@ -51,8 +53,9 @@ ifeq ($(CUDA_BACKEND), 1)
 endif
 
 ARGS = TTI 200 200 200 8 12.5 12.5 12.5 0.0001 0.001 4 0.0005
+NP ?= 2
 
-.PHONY: all clean run print test debug valgrind lsp
+.PHONY: all clean run mpirun print test debug valgrind lsp
 
 all: $(BIN)
 
@@ -81,6 +84,11 @@ run: $(BIN)
 	@mkdir -p $(RESDIR)
 	@echo "Runing $(BIN). Out putting at ./$(RESDIR)"
 	./$(BIN) $(ARGS)
+
+mpirun: $(BIN)
+	@mkdir -p $(RESDIR)
+	@echo "Runing $(BIN) on $(NP) ranks. Out putting at ./$(RESDIR)"
+	mpirun -np $(NP) ./$(BIN) $(ARGS)
 
 debug: $(BIN)
 	@mkdir -p $(RESDIR)
