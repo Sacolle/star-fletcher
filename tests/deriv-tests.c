@@ -113,9 +113,9 @@ Test(derivative, second_degree_xlin) {
     }
 }
 
-size_t g_volume_width;
-size_t g_cube_width;
-size_t g_width_in_cubes;
+size_t g_volume_width_x, g_volume_width_y, g_volume_width_z;
+size_t g_cube_width_x, g_cube_width_y, g_cube_width_z;
+size_t g_width_in_cubes_x, g_width_in_cubes_y, g_width_in_cubes_z;
 
 FP* g_volume_matrix;
 FP** g_segment_matrix;
@@ -124,31 +124,36 @@ void build_matricies(){
     setup_seed();
 
     // use 3 because it simplifies
-    g_width_in_cubes = 3;
+    g_width_in_cubes_x = g_width_in_cubes_y = g_width_in_cubes_z = 3;
     
     //can change to see the effect of diferent values
-    g_cube_width = 16;
-    g_volume_width = g_cube_width * g_width_in_cubes;
+    // diferent widths per axis, to test blocks that are not cubes
+    g_cube_width_x = 16;
+    g_cube_width_y = 14;
+    g_cube_width_z = 12;
+    g_volume_width_x = g_cube_width_x * g_width_in_cubes_x;
+    g_volume_width_y = g_cube_width_y * g_width_in_cubes_y;
+    g_volume_width_z = g_cube_width_z * g_width_in_cubes_z;
 
-    if((g_volume_matrix = malloc(sizeof(FP) * CUBE(g_volume_width))) == NULL){
+    if((g_volume_matrix = malloc(sizeof(FP) * g_volume_width_x * g_volume_width_y * g_volume_width_z)) == NULL){
         cr_assert(false);
     }
 
-    if((g_segment_matrix = malloc(sizeof(FP*) * CUBE(g_width_in_cubes))) == NULL){
+    if((g_segment_matrix = malloc(sizeof(FP*) * (g_width_in_cubes_x * g_width_in_cubes_y * g_width_in_cubes_z))) == NULL){
         cr_assert(false);
     }
-    for(size_t l = 0; l < CUBE(g_width_in_cubes); l++){
-        if((g_segment_matrix[l] = malloc(sizeof(FP) * CUBE(g_cube_width))) == NULL){
+    for(size_t l = 0; l < (g_width_in_cubes_x * g_width_in_cubes_y * g_width_in_cubes_z); l++){
+        if((g_segment_matrix[l] = malloc(sizeof(FP) * (g_cube_width_x * g_cube_width_y * g_cube_width_z))) == NULL){
             cr_assert(false);
         }
     }
 
-    for(size_t k = 0; k < g_width_in_cubes; k++)
-    for(size_t j = 0; j < g_width_in_cubes; j++)
-    for(size_t i = 0; i < g_width_in_cubes; i++){
-        for(size_t z = 0; z < g_cube_width; z++)
-        for(size_t y = 0; y < g_cube_width; y++)
-        for(size_t x = 0; x < g_cube_width; x++){
+    for(size_t k = 0; k < g_width_in_cubes_z; k++)
+    for(size_t j = 0; j < g_width_in_cubes_y; j++)
+    for(size_t i = 0; i < g_width_in_cubes_x; i++){
+        for(size_t z = 0; z < g_cube_width_z; z++)
+        for(size_t y = 0; y < g_cube_width_y; y++)
+        for(size_t x = 0; x < g_cube_width_x; x++){
             const FP rand_val = FP_RAND();
             g_segment_matrix[block_idx(i, j, k)][cube_idx(x, y, z)] = rand_val;
             g_volume_matrix[block_cube_to_volume_idx(x, y, z, i, j, k)] = rand_val;
@@ -158,7 +163,7 @@ void build_matricies(){
 
 void teardown_values(){
     free(g_volume_matrix);
-    for(size_t l = 0; l < CUBE(g_width_in_cubes); l++){
+    for(size_t l = 0; l < (g_width_in_cubes_x * g_width_in_cubes_y * g_width_in_cubes_z); l++){
         free(g_segment_matrix[l]);
     }
     free(g_segment_matrix);
@@ -167,13 +172,13 @@ void teardown_values(){
 TestSuite(cross_derivative, .init = build_matricies, .fini = teardown_values);
 
 Test(cross_derivative, same_random_values) {
-    for(size_t k = 0; k < g_width_in_cubes; k++)
-    for(size_t j = 0; j < g_width_in_cubes; j++)
-    for(size_t i = 0; i < g_width_in_cubes; i++){
+    for(size_t k = 0; k < g_width_in_cubes_z; k++)
+    for(size_t j = 0; j < g_width_in_cubes_y; j++)
+    for(size_t i = 0; i < g_width_in_cubes_x; i++){
         FP* block = g_segment_matrix[block_idx(i, j, k)];
-        for(size_t z = 0; z < g_cube_width; z++)
-        for(size_t y = 0; y < g_cube_width; y++)
-        for(size_t x = 0; x < g_cube_width; x++){
+        for(size_t z = 0; z < g_cube_width_z; z++)
+        for(size_t y = 0; y < g_cube_width_y; y++)
+        for(size_t x = 0; x < g_cube_width_x; x++){
             cr_assert(epsilon_eq(FP_CRIT, 
                 block[cube_idx(x,y,z)], 
                 g_volume_matrix[block_cube_to_volume_idx(x, y, z, i, j, k)], 
@@ -186,44 +191,44 @@ Test(cross_derivative, same_random_values) {
 Test(cross_derivative, cross_derivative_computation) {
     FP* center = g_segment_matrix[block_idx(1, 1, 1)];
 
-    for(size_t z = 0; z < g_cube_width; z++)
-    for(size_t y = 0; y < g_cube_width; y++)
-    for(size_t x = 0; x < g_cube_width; x++){
-        const FP baseline_xy = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, g_volume_width, 1.0);
-        const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width, SQUARE(g_volume_width), 1.0);
-        const FP baseline_xz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, SQUARE(g_volume_width), 1.0);
+    for(size_t z = 0; z < g_cube_width_z; z++)
+    for(size_t y = 0; y < g_cube_width_y; y++)
+    for(size_t x = 0; x < g_cube_width_x; x++){
+        const FP baseline_xy = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, g_volume_width_x, 1.0);
+        const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width_x, (g_volume_width_x * g_volume_width_y), 1.0);
+        const FP baseline_xz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, (g_volume_width_x * g_volume_width_y), 1.0);
 
         const FP my_impl_xy = cross_deriv_ddir(
             center, cube_idx(x, y, z), 
             x, g_segment_matrix[block_idx(0, 1, 1)], g_segment_matrix[block_idx(2, 1, 1)], 1, 
-            y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width, 
+            y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width_x, 
             g_segment_matrix[block_idx(2, 2, 1)],
             g_segment_matrix[block_idx(2, 0, 1)],
             g_segment_matrix[block_idx(0, 2, 1)],
             g_segment_matrix[block_idx(0, 0, 1)],
-            g_cube_width, 1.0
+            g_cube_width_x, g_cube_width_y, 1.0
         );
 
         const FP my_impl_yz = cross_deriv_ddir(
             center, cube_idx(x, y, z), 
-            y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width, 
-            z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], SQUARE(g_cube_width), 
+            y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width_x, 
+            z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], (g_cube_width_x * g_cube_width_y), 
             g_segment_matrix[block_idx(1, 2, 2)],
             g_segment_matrix[block_idx(1, 2, 0)],
             g_segment_matrix[block_idx(1, 0, 2)],
             g_segment_matrix[block_idx(1, 0, 0)],
-            g_cube_width, 1.0
+            g_cube_width_y, g_cube_width_z, 1.0
         );
 
         const FP my_impl_xz = cross_deriv_ddir(
             center, cube_idx(x, y, z), 
             x, g_segment_matrix[block_idx(0, 1, 1)], g_segment_matrix[block_idx(2, 1, 1)], 1, 
-            z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], SQUARE(g_cube_width), 
+            z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], (g_cube_width_x * g_cube_width_y), 
             g_segment_matrix[block_idx(2, 1, 2)],
             g_segment_matrix[block_idx(2, 1, 0)],
             g_segment_matrix[block_idx(0, 1, 2)],
             g_segment_matrix[block_idx(0, 1, 0)],
-            g_cube_width, 1.0
+            g_cube_width_x, g_cube_width_z, 1.0
         );
 
         cr_assert(epsilon_eq(FP_CRIT, baseline_xy, my_impl_xy, EPSILON), "(%ld, %ld, %ld)", x, y, z);
@@ -235,22 +240,22 @@ Test(cross_derivative, cross_derivative_computation) {
 Test(cross_derivative, cross_derivative_computation_xy_single_center) {
     FP* center = g_segment_matrix[block_idx(1, 1, 1)];
 
-    size_t z = g_cube_width / 2;
-    size_t y = g_cube_width / 2;
-    size_t x = g_cube_width / 2;
-    const FP baseline_xy = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, g_volume_width, 1.0);
-    //const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width, SQUARE(g_volume_width), 1.0);
-    //const FP baseline_xz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, SQUARE(g_volume_width), 1.0);
+    size_t z = g_cube_width_z / 2;
+    size_t y = g_cube_width_y / 2;
+    size_t x = g_cube_width_x / 2;
+    const FP baseline_xy = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, g_volume_width_x, 1.0);
+    //const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width_x, (g_volume_width_x * g_volume_width_y), 1.0);
+    //const FP baseline_xz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, (g_volume_width_x * g_volume_width_y), 1.0);
 
     const FP my_impl_xy = cross_deriv_ddir(
         center, cube_idx(x, y, z), 
         x, g_segment_matrix[block_idx(0, 1, 1)], g_segment_matrix[block_idx(2, 1, 1)], 1, 
-        x, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width, 
+        y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width_x, 
         g_segment_matrix[block_idx(2, 2, 1)],
         g_segment_matrix[block_idx(2, 0, 1)],
         g_segment_matrix[block_idx(0, 2, 1)],
         g_segment_matrix[block_idx(0, 0, 1)],
-        g_cube_width, 1.0
+        g_cube_width_x, g_cube_width_y, 1.0
     );
 
     cr_assert(epsilon_eq(FP_CRIT, baseline_xy, my_impl_xy, EPSILON), "(%ld, %ld, %ld)", x, y, z);
@@ -262,19 +267,19 @@ Test(cross_derivative, cross_derivative_computation_xy_single_corner) {
     size_t z = 0;
     size_t y = 0;
     size_t x = 0;
-    const FP baseline_xy = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, g_volume_width, 1.0);
-    //const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width, SQUARE(g_volume_width), 1.0);
-    //const FP baseline_xz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, SQUARE(g_volume_width), 1.0);
+    const FP baseline_xy = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, g_volume_width_x, 1.0);
+    //const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width_x, (g_volume_width_x * g_volume_width_y), 1.0);
+    //const FP baseline_xz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, (g_volume_width_x * g_volume_width_y), 1.0);
 
     const FP my_impl_xy = cross_deriv_ddir(
         center, cube_idx(x, y, z), 
         x, g_segment_matrix[block_idx(0, 1, 1)], g_segment_matrix[block_idx(2, 1, 1)], 1, 
-        x, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width, 
+        y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width_x, 
         g_segment_matrix[block_idx(2, 2, 1)],
         g_segment_matrix[block_idx(2, 0, 1)],
         g_segment_matrix[block_idx(0, 2, 1)],
         g_segment_matrix[block_idx(0, 0, 1)],
-        g_cube_width, 1.0
+        g_cube_width_x, g_cube_width_y, 1.0
     );
 
     cr_assert(epsilon_eq(FP_CRIT, baseline_xy, my_impl_xy, EPSILON), "(%ld, %ld, %ld)", x, y, z);
@@ -286,19 +291,19 @@ Test(cross_derivative, cross_derivative_ootwo) {
     size_t z = 0;
     size_t y = 0;
     size_t x = 2;
-    const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width, SQUARE(g_volume_width), 1.0);
+    const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width_x, (g_volume_width_x * g_volume_width_y), 1.0);
 
-    // DerCrossPrint(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width, SQUARE(g_volume_width), 1.0);
+    // DerCrossPrint(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width_x, (g_volume_width_x * g_volume_width_y), 1.0);
 
     const FP my_impl_yz = cross_deriv_ddir(
         center, cube_idx(x, y, z), 
-        y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width, 
-        z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], SQUARE(g_cube_width), 
+        y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width_x, 
+        z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], (g_cube_width_x * g_cube_width_y), 
         g_segment_matrix[block_idx(1, 2, 2)],
         g_segment_matrix[block_idx(1, 2, 0)],
         g_segment_matrix[block_idx(1, 0, 2)],
         g_segment_matrix[block_idx(1, 0, 0)],
-        g_cube_width, 1.0
+        g_cube_width_y, g_cube_width_z, 1.0
     );
     fflush(stdout);
     cr_assert(epsilon_eq(FP_CRIT, baseline_yz, my_impl_yz, EPSILON), "(%ld, %ld, %ld)", x, y, z);
@@ -310,19 +315,19 @@ Test(cross_derivative, cross_derivative_otwelveo_yz) {
     size_t z = 0;
     size_t y = 12;
     size_t x = 0;
-    const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width, SQUARE(g_volume_width), 1.0);
+    const FP baseline_yz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width_x, (g_volume_width_x * g_volume_width_y), 1.0);
 
-    //DerCrossPrint(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width, SQUARE(g_volume_width), 1.0);
+    //DerCrossPrint(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), g_volume_width_x, (g_volume_width_x * g_volume_width_y), 1.0);
 
     const FP my_impl_yz = cross_deriv_ddir(
         center, cube_idx(x, y, z), 
-        y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width, 
-        z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], SQUARE(g_cube_width), 
+        y, g_segment_matrix[block_idx(1, 0, 1)], g_segment_matrix[block_idx(1, 2, 1)], g_cube_width_x, 
+        z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], (g_cube_width_x * g_cube_width_y), 
         g_segment_matrix[block_idx(1, 2, 2)],
         g_segment_matrix[block_idx(1, 2, 0)],
         g_segment_matrix[block_idx(1, 0, 2)],
         g_segment_matrix[block_idx(1, 0, 0)],
-        g_cube_width, 1.0
+        g_cube_width_y, g_cube_width_z, 1.0
     );
     fflush(stdout);
     cr_assert(epsilon_eq(FP_CRIT, baseline_yz, my_impl_yz, EPSILON), "(%ld, %ld, %ld)", x, y, z);
@@ -334,19 +339,19 @@ Test(cross_derivative, cross_derivative_otwelveo) {
     size_t z = 0;
     size_t y = 12;
     size_t x = 0;
-    const FP baseline_xz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, SQUARE(g_volume_width), 1.0);
+    const FP baseline_xz = DerCross(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, (g_volume_width_x * g_volume_width_y), 1.0);
 
-    //DerCrossPrint(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, SQUARE(g_volume_width), 1.0);
+    //DerCrossPrint(g_volume_matrix, block_cube_to_volume_idx(x, y, z, 1, 1, 1), 1, (g_volume_width_x * g_volume_width_y), 1.0);
 
     const FP my_impl_xz = cross_deriv_ddir(
         center, cube_idx(x, y, z), 
         x, g_segment_matrix[block_idx(0, 1, 1)], g_segment_matrix[block_idx(2, 1, 1)], 1, 
-        z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], SQUARE(g_cube_width), 
+        z, g_segment_matrix[block_idx(1, 1, 0)], g_segment_matrix[block_idx(1, 1, 2)], (g_cube_width_x * g_cube_width_y), 
         g_segment_matrix[block_idx(2, 1, 2)],
         g_segment_matrix[block_idx(2, 1, 0)],
         g_segment_matrix[block_idx(0, 1, 2)],
         g_segment_matrix[block_idx(0, 1, 0)],
-        g_cube_width, 1.0
+        g_cube_width_x, g_cube_width_z, 1.0
     );
     fflush(stdout);
     cr_assert(epsilon_eq(FP_CRIT, baseline_xz, my_impl_xz, EPSILON), "(%ld, %ld, %ld)", x, y, z);

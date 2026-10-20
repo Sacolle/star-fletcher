@@ -89,7 +89,7 @@ err_t io_state_init(
 }
 #include <stdio.h>
 
-extern size_t g_volume_width;
+extern size_t g_volume_width_x, g_volume_width_y, g_volume_width_z;
 
 void io_state_write_file(
     const size_t i, const size_t j, const size_t k, const size_t t, 
@@ -97,7 +97,7 @@ void io_state_write_file(
 ){
     io_state_t* state = get_io_state();
     FP* buff = state->buff;
-    const size_t total_volume_size = CUBE(g_volume_width);
+    const size_t total_volume_size = g_volume_width_x * g_volume_width_y * g_volume_width_z;
 
     for(size_t x = 0; x < nx; x++)
     for(size_t y = 0; y < ny; y++)

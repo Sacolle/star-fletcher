@@ -102,12 +102,14 @@ static inline bool inbounds(size_t val, size_t lb, size_t ub){
     return val >= lb && val <= ub;
 }
 
-FP max_speed_in_cube_segment(FP *v, const size_t start_idx, const size_t end_idx){
+// max speed in the segment [start_idx, end_{x,y,z}) of the volume
+FP max_speed_in_cube_segment(FP *v, const size_t start_idx,
+    const size_t end_x, const size_t end_y, const size_t end_z){
     FP max_speed = FP_LIT(0.0);
 
-    for(size_t z = start_idx; z < end_idx; z++){
-        for(size_t y = start_idx; y < end_idx; y++){
-            for(size_t x = start_idx; x < end_idx; x++){
+    for(size_t z = start_idx; z < end_z; z++){
+        for(size_t y = start_idx; y < end_y; y++){
+            for(size_t x = start_idx; x < end_x; x++){
                 const size_t i = volume_idx(x, y, z);
                 max_speed = FP_MAX(v[i], max_speed);
             }
@@ -120,33 +122,38 @@ void medium_random_velocity_boundary(
     const size_t border_width, const size_t absorb_width,
     FP *restrict vpz, FP *restrict vsv
 ){
-    extern size_t g_volume_width;
+    extern size_t g_volume_width_x, g_volume_width_y, g_volume_width_z;
     const size_t outer_width = border_width + absorb_width;
 
+    // per axis (x, y, z) end of the input grid
     const size_t inside_start = outer_width;
-    const size_t inside_end = g_volume_width - outer_width;
+    const size_t inside_end[3] = {
+        g_volume_width_x - outer_width,
+        g_volume_width_y - outer_width,
+        g_volume_width_z - outer_width
+    };
 
-    const FP max_speed_p = max_speed_in_cube_segment(vpz, inside_start, inside_end);
-    const FP max_speed_s = max_speed_in_cube_segment(vsv, inside_start, inside_end);
+    const FP max_speed_p = max_speed_in_cube_segment(vpz, inside_start, inside_end[0], inside_end[1], inside_end[2]);
+    const FP max_speed_s = max_speed_in_cube_segment(vsv, inside_start, inside_end[0], inside_end[1], inside_end[2]);
 
-    for(size_t z = 0; z < g_volume_width; z++){
-        for(size_t y = 0; y < g_volume_width; y++){
-            for(size_t x = 0; x < g_volume_width; x++){
+    for(size_t z = 0; z < g_volume_width_z; z++){
+        for(size_t y = 0; y < g_volume_width_y; y++){
+            for(size_t x = 0; x < g_volume_width_x; x++){
 
                 const size_t i = volume_idx(x, y, z);
 
                 // do nothing inside input grid
-                if(inbounds(z, inside_start, inside_end - 1) &&
-                   inbounds(y, inside_start, inside_end - 1) && 
-                   inbounds(x, inside_start, inside_end - 1)){
+                if(inbounds(z, inside_start, inside_end[2] - 1) &&
+                   inbounds(y, inside_start, inside_end[1] - 1) && 
+                   inbounds(x, inside_start, inside_end[0] - 1)){
                     continue;
                 }
 
                 // null speed at border
                 // which is a point not within the bounds defided by the aborsb - inner - absobr
-                if(!(inbounds(z, border_width, g_volume_width - border_width - 1) &&
-                     inbounds(y, border_width, g_volume_width - border_width - 1) &&
-                     inbounds(x, border_width, g_volume_width - border_width - 1))
+                if(!(inbounds(z, border_width, g_volume_width_z - border_width - 1) &&
+                     inbounds(y, border_width, g_volume_width_y - border_width - 1) &&
+                     inbounds(x, border_width, g_volume_width_x - border_width - 1))
                 ){
                     vpz[i] = FP_LIT(0.0);
                     vsv[i] = FP_LIT(0.0);
@@ -162,9 +169,9 @@ void medium_random_velocity_boundary(
                 FP dist = FP_LIT(0.0);
                 for(size_t dir_i = 0; dir_i < DIR_AMOUNT; dir_i++){
                     const size_t dir = ivel[dir_i];
-                    if (dir >= inside_end){ 
-                        dist = FP_MAX(dist, (FP)(dir - inside_end + 1 )); 
-                        ivel[dir_i] = inside_end - 1; 
+                    if (dir >= inside_end[dir_i]){ 
+                        dist = FP_MAX(dist, (FP)(dir - inside_end[dir_i] + 1 )); 
+                        ivel[dir_i] = inside_end[dir_i] - 1; 
                     }else if (dir < inside_start){ 
                         dist = FP_MAX(dist, (FP)(inside_start - dir)); 
                         ivel[dir_i] = inside_start; 
@@ -197,21 +204,21 @@ void medium_calc_intermediary_values(
     FP **restrict ch1dxy, FP **restrict ch1dyz, FP **restrict ch1dxz, 
     FP **restrict v2px, FP **restrict v2pz, FP **restrict v2sz, FP **restrict v2pn
 ){
-    extern size_t g_width_in_cubes;
-    extern size_t g_cube_width;
+    extern size_t g_width_in_cubes_x, g_width_in_cubes_y, g_width_in_cubes_z;
+    extern size_t g_cube_width_x, g_cube_width_y, g_cube_width_z;
 
 
-    for(size_t k = 0; k < g_width_in_cubes; k++){
-        for(size_t j = 0; j < g_width_in_cubes; j++){
-            for(size_t i = 0; i < g_width_in_cubes; i++){
+    for(size_t k = 0; k < g_width_in_cubes_z; k++){
+        for(size_t j = 0; j < g_width_in_cubes_y; j++){
+            for(size_t i = 0; i < g_width_in_cubes_x; i++){
                 //index the block
                 const size_t b_i = block_idx(i, j , k);
 
-                for(size_t z = 0; z < g_cube_width; z++){
-                    for(size_t y = 0; y < g_cube_width; y++){
-                        for(size_t x = 0; x < g_cube_width; x++){
+                for(size_t z = 0; z < g_cube_width_z; z++){
+                    for(size_t y = 0; y < g_cube_width_y; y++){
+                        for(size_t x = 0; x < g_cube_width_x; x++){
                             const size_t c_i = cube_idx(x, y, z);
-                            const size_t vol_i = volume_idx(x + i * g_cube_width, y + j * g_cube_width, z + k * g_cube_width);
+                            const size_t vol_i = block_cube_to_volume_idx(x, y, z, i, j, k);
 
                             // changing the data type TO be the same as in the original
                             const FP sinTheta = sin(theta[vol_i]);

@@ -256,13 +256,13 @@ TestSuite(medium, .init = setup_seed);
 #define EPSILON FLT_EPSILON
 
 
-size_t g_volume_width;
-size_t g_cube_width;
-size_t g_width_in_cubes;
+size_t g_volume_width_x, g_volume_width_y, g_volume_width_z;
+size_t g_cube_width_x, g_cube_width_y, g_cube_width_z;
+size_t g_width_in_cubes_x, g_width_in_cubes_y, g_width_in_cubes_z;
 
 Test(medium, proper_initialization){
 
-    g_volume_width = 10;
+    g_volume_width_x = g_volume_width_y = g_volume_width_z = 10;
     const int sx = 10;
     const int sy = 10;
     const int sz = 10;
@@ -315,7 +315,7 @@ Test(medium, correct_absorb){
     const int sy = ny + 2 * bord + 2 * absorb;
     const int sz = nz + 2 * bord + 2 * absorb;
 
-    g_volume_width = sx;
+    g_volume_width_x = sx; g_volume_width_y = sy; g_volume_width_z = sz;
     const int size = sx * sy * sz;
 
     FP vpz_base[size];
@@ -361,8 +361,8 @@ Test(medium, correct_absorb){
 Test(medium, correct_intermediary_values){
     const size_t seg = 3;
     const size_t c_size = 10;
-    g_width_in_cubes = seg;
-    g_cube_width = c_size;
+    g_width_in_cubes_x = g_width_in_cubes_y = g_width_in_cubes_z = seg;
+    g_cube_width_x = g_cube_width_y = g_cube_width_z = c_size;
 
     const int bord = 4;
     const int absorb = 4;
@@ -373,7 +373,7 @@ Test(medium, correct_intermediary_values){
     const int sy = ny + 2 * bord + 2 * absorb;
     const int sz = nz + 2 * bord + 2 * absorb;
 
-    g_volume_width = sx;
+    g_volume_width_x = sx; g_volume_width_y = sy; g_volume_width_z = sz;
     const int size = sx * sy * sz;
 
     FP vpz_base[size];
@@ -483,17 +483,17 @@ Test(medium, correct_intermediary_values){
         (FP**) v2px_myimpl, (FP**) v2pz_myimpl, (FP**) v2sz_myimpl, (FP**) v2pn_myimpl
     );
 
-    for(size_t k = 0; k < g_width_in_cubes; k++){
-        for(size_t j = 0; j < g_width_in_cubes; j++){
-            for(size_t i = 0; i < g_width_in_cubes; i++){
+    for(size_t k = 0; k < g_width_in_cubes_x; k++){
+        for(size_t j = 0; j < g_width_in_cubes_x; j++){
+            for(size_t i = 0; i < g_width_in_cubes_x; i++){
                 //index the block
                 const size_t b_i = block_idx(i, j , k);
 
-                for(size_t z = 0; z < g_cube_width; z++){
-                    for(size_t y = 0; y < g_cube_width; y++){
-                        for(size_t x = 0; x < g_cube_width; x++){
+                for(size_t z = 0; z < g_cube_width_x; z++){
+                    for(size_t y = 0; y < g_cube_width_x; y++){
+                        for(size_t x = 0; x < g_cube_width_x; x++){
                             const size_t c_i = cube_idx(x, y, z);
-                            const size_t vol_i = volume_idx(x + i * g_cube_width, y + j * g_cube_width, z + k * g_cube_width);
+                            const size_t vol_i = volume_idx(x + i * g_cube_width_x, y + j * g_cube_width_x, z + k * g_cube_width_x);
 
                             cr_expect(epsilon_eq(flt, ch1dxx_base[vol_i], ch1dxx_myimpl[b_i][c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
@@ -551,8 +551,8 @@ Test(medium, correct_intermediary_values){
 Test(medium, kernel_proper_computation){
     const size_t seg = 3;
     const size_t c_size = 10;
-    g_width_in_cubes = seg;
-    g_cube_width = c_size;
+    g_width_in_cubes_x = g_width_in_cubes_y = g_width_in_cubes_z = seg;
+    g_cube_width_x = g_cube_width_y = g_cube_width_z = c_size;
 
     const int bord = 4;
     const int absorb = 4;
@@ -563,7 +563,7 @@ Test(medium, kernel_proper_computation){
     const int sy = ny + 2 * bord + 2 * absorb;
     const int sz = nz + 2 * bord + 2 * absorb;
 
-    g_volume_width = sx;
+    g_volume_width_x = sx; g_volume_width_y = sy; g_volume_width_z = sz;
     const int size = sx * sy * sz;
 
     FP vpz[size];
@@ -608,9 +608,9 @@ Test(medium, kernel_proper_computation){
         (FP**) v2px, (FP**) v2pz, (FP**) v2sz, (FP**) v2pn
     );
 
-    for(size_t k = 0; k < g_width_in_cubes; k++){
-        for(size_t j = 0; j < g_width_in_cubes; j++){
-            for(size_t i = 0; i < g_width_in_cubes; i++){
+    for(size_t k = 0; k < g_width_in_cubes_x; k++){
+        for(size_t j = 0; j < g_width_in_cubes_x; j++){
+            for(size_t i = 0; i < g_width_in_cubes_x; i++){
                 //index the block
                 const size_t b_i = block_idx(i, j, k);
 
@@ -637,7 +637,7 @@ Test(medium, source_value){
 
 
 Test(medium, stability_condition){
-    g_volume_width = 10;
+    g_volume_width_x = g_volume_width_y = g_volume_width_z = 10;
     const float dx = 12.5, dy = 12.5, dz = 12.5;
     const int sx = 10;
     const int sy = 10;

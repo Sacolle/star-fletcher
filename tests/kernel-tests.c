@@ -53,9 +53,9 @@ void setup_seed(void){
     srand(SEED);
 }
 
-size_t g_volume_width;
-size_t g_cube_width;
-size_t g_width_in_cubes;
+size_t g_volume_width_x, g_volume_width_y, g_volume_width_z;
+size_t g_cube_width_x, g_cube_width_y, g_cube_width_z;
+size_t g_width_in_cubes_x, g_width_in_cubes_y, g_width_in_cubes_z;
 
 const size_t absorb_width = 4;
 
@@ -76,8 +76,8 @@ void base_computation_implementation(
     float* pc, float* pp, float* qc, float* qp
 ){
     const int strideX = 1;
-    const int strideY = g_volume_width;
-    const int strideZ = g_volume_width * g_volume_width;
+    const int strideY = g_volume_width_x;
+    const int strideZ = g_volume_width_x * g_volume_width_x;
 
     const float dxxinv=1.0f/(dx*dx);
     const float dyyinv=1.0f/(dy*dy);
@@ -142,17 +142,17 @@ void build_matricies(){
     setup_seed();
 
     // use 3 because it simplifies
-    g_width_in_cubes = 3;
+    g_width_in_cubes_x = g_width_in_cubes_y = g_width_in_cubes_z = 3;
     
     //can change to see the effect of diferent values
-    g_cube_width = 16;
-    g_volume_width = g_cube_width * g_width_in_cubes;
+    g_cube_width_x = g_cube_width_y = g_cube_width_z = 16;
+    g_volume_width_x = g_volume_width_y = g_volume_width_z = g_cube_width_x * g_width_in_cubes_x;
 
     const enum Form form = TTI;
     
     mem_vec_t medium_allocs = NULL;
     FP *vpz, *vsv, *epsilon, *delta, *phi, *theta;
-    const size_t medium_size = sizeof(FP) * CUBE(g_volume_width);
+    const size_t medium_size = sizeof(FP) * CUBE(g_volume_width_x);
 
     TRY(mem_allocate_local(&medium_allocs, (void**) &vpz, medium_size));
     TRY(mem_allocate_local(&medium_allocs, (void**) &vsv, medium_size));
@@ -162,7 +162,7 @@ void build_matricies(){
     TRY(mem_allocate_local(&medium_allocs, (void**) &theta, medium_size));
 
     // inicialize the buffers above based on the type of medium
-    medium_initialize(form, CUBE(g_volume_width), vpz, vsv, epsilon, delta, phi, theta);
+    medium_initialize(form, CUBE(g_volume_width_x), vpz, vsv, epsilon, delta, phi, theta);
     
     // set the absorption zone for vpz and vsv
     medium_random_velocity_boundary(BORDER_WIDTH, absorb_width, vpz, vsv);
@@ -172,16 +172,16 @@ void build_matricies(){
         for(size_t i = 0; i < CUBE(cubes); i++) \
             TRY(mem_allocate_local(&allocs, (void**)(v + i), CUBE(sizes) * sizeof(FP)));
 
-    ALLOCATE_NESTED_BUFFER(g_ch1dxx, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dyy, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dzz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dxy, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dyz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dxz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_v2px, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_v2pz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_v2sz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_v2pn, g_width_in_cubes, g_cube_width);
+    ALLOCATE_NESTED_BUFFER(g_ch1dxx, g_width_in_cubes_x, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_ch1dyy, g_width_in_cubes_x, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_ch1dzz, g_width_in_cubes_x, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_ch1dxy, g_width_in_cubes_x, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_ch1dyz, g_width_in_cubes_x, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_ch1dxz, g_width_in_cubes_x, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_v2px, g_width_in_cubes_x, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_v2pz, g_width_in_cubes_x, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_v2sz, g_width_in_cubes_x, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_v2pn, g_width_in_cubes_x, g_cube_width_x);
 
     medium_calc_intermediary_values(
         vpz, vsv, epsilon, delta, phi, theta,
@@ -191,28 +191,28 @@ void build_matricies(){
     //at this point the values for the medium will not be used again
     mem_free_local(&medium_allocs);
 
-    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_pp, CUBE(g_volume_width) * sizeof(FP))); 
-    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_pc, CUBE(g_volume_width) * sizeof(FP))); 
-    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_qp, CUBE(g_volume_width) * sizeof(FP))); 
-    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_qc, CUBE(g_volume_width) * sizeof(FP))); 
+    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_pp, CUBE(g_volume_width_x) * sizeof(FP))); 
+    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_pc, CUBE(g_volume_width_x) * sizeof(FP))); 
+    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_qp, CUBE(g_volume_width_x) * sizeof(FP))); 
+    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_qc, CUBE(g_volume_width_x) * sizeof(FP))); 
 
     //TODO: size is diferent due to border
     // I do not acess the inner values of the border ones:
     // so they do not need to be initialized, but i need to be able to acess them
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[0], g_width_in_cubes + 2, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[1], g_width_in_cubes + 2, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[2], g_width_in_cubes + 2, g_cube_width);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[0], g_width_in_cubes_x + 2, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[1], g_width_in_cubes_x + 2, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[2], g_width_in_cubes_x + 2, g_cube_width_x);
 
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[0], g_width_in_cubes + 2, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[1], g_width_in_cubes + 2, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[2], g_width_in_cubes + 2, g_cube_width);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[0], g_width_in_cubes_x + 2, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[1], g_width_in_cubes_x + 2, g_cube_width_x);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[2], g_width_in_cubes_x + 2, g_cube_width_x);
 
-    for(size_t k = 0; k < g_width_in_cubes; k++)
-    for(size_t j = 0; j < g_width_in_cubes; j++)
-    for(size_t i = 0; i < g_width_in_cubes; i++){
-        for(size_t z = 0; z < g_cube_width; z++)
-        for(size_t y = 0; y < g_cube_width; y++)
-        for(size_t x = 0; x < g_cube_width; x++){
+    for(size_t k = 0; k < g_width_in_cubes_x; k++)
+    for(size_t j = 0; j < g_width_in_cubes_x; j++)
+    for(size_t i = 0; i < g_width_in_cubes_x; i++){
+        for(size_t z = 0; z < g_cube_width_x; z++)
+        for(size_t y = 0; y < g_cube_width_x; y++)
+        for(size_t x = 0; x < g_cube_width_x; x++){
             const FP rand_val = FP_RAND();
             for(size_t d = 0; d < 3; d++){
                 g_segment_matrix_p[d][block_idx(i, j, k)][cube_idx(x, y, z)] = 0.0f;
@@ -243,8 +243,8 @@ TestSuite(fletcher_kernel, .init = build_matricies, .fini = teardown_values);
 
 #define ASBLK(_ptr) ((struct starpu_block_interface) { \
     .id = STARPU_BLOCK_INTERFACE_ID, .ptr = (uintptr_t) _ptr, \
-    .nx = g_cube_width, .ny = g_cube_width, .nz = g_cube_width, \
-    .ldy = g_cube_width, .ldz = g_cube_width * g_cube_width, .elemsize = sizeof(FP)})
+    .nx = g_cube_width_x, .ny = g_cube_width_x, .nz = g_cube_width_x, \
+    .ldy = g_cube_width_x, .ldz = g_cube_width_x * g_cube_width_x, .elemsize = sizeof(FP)})
 
 void build_handles(struct starpu_block_interface handles[52], size_t i, size_t j, size_t k){
     const size_t idx = block_idx(i, j, k);
@@ -331,7 +331,7 @@ Test(fletcher_kernel, compute_one_step) {
     const FP dx = 12.5f, dy = 12.5f, dz = 12.5f;
     const FP source = medium_source_value(dt, 0);
 
-    const size_t volume_center_idx = volume_idx(g_volume_width / 2, g_volume_width / 2, g_volume_width / 2);
+    const size_t volume_center_idx = volume_idx(g_volume_width_x / 2, g_volume_width_x / 2, g_volume_width_x / 2);
     const size_t center_cube_idx = volume_to_block_idx(volume_center_idx) + block_idx(1, 1, 1);
     const size_t source_local_cube_idx = volume_to_cube_idx(volume_center_idx);
 
@@ -352,9 +352,9 @@ Test(fletcher_kernel, compute_one_step) {
     perturbation_kernel((void**) v_source_handles, p_args);
     free(p_args);
     
-    for(size_t k = 1; k < g_width_in_cubes + 1; k++)
-    for(size_t j = 1; j < g_width_in_cubes + 1; j++)
-    for(size_t i = 1; i < g_width_in_cubes + 1; i++){
+    for(size_t k = 1; k < g_width_in_cubes_x + 1; k++)
+    for(size_t j = 1; j < g_width_in_cubes_x + 1; j++)
+    for(size_t i = 1; i < g_width_in_cubes_x + 1; i++){
 
         struct starpu_block_interface handles[52];
         struct starpu_block_interface* virtual_handles[52];
@@ -362,11 +362,11 @@ Test(fletcher_kernel, compute_one_step) {
         virtualize_handles(handles, virtual_handles, 52);
 
         const size_t start_z = k == 1 ? BORDER_WIDTH : 0;
-        const size_t end_z = g_cube_width - (k == g_width_in_cubes ? BORDER_WIDTH : 0);
+        const size_t end_z = g_cube_width_x - (k == g_width_in_cubes_x ? BORDER_WIDTH : 0);
         const size_t start_y = j == 1 ? BORDER_WIDTH : 0;
-        const size_t end_y = g_cube_width - (j == g_width_in_cubes ? BORDER_WIDTH : 0);
+        const size_t end_y = g_cube_width_x - (j == g_width_in_cubes_x ? BORDER_WIDTH : 0);
         const size_t start_x = i == 1 ? BORDER_WIDTH : 0;
-        const size_t end_x = g_cube_width - (i == g_width_in_cubes ? BORDER_WIDTH : 0);
+        const size_t end_x = g_cube_width_x - (i == g_width_in_cubes_x ? BORDER_WIDTH : 0);
         
         struct rtm_args* rtm_args;
         cr_assert(not(make_rtm_args(&rtm_args, 
@@ -378,9 +378,9 @@ Test(fletcher_kernel, compute_one_step) {
         rtm_kernel((void**) virtual_handles, (void*) rtm_args);
         free(rtm_args);
 
-        for(size_t z = 0; z < g_cube_width; z++)
-        for(size_t y = 0; y < g_cube_width; y++)
-        for(size_t x = 0; x < g_cube_width; x++){
+        for(size_t z = 0; z < g_cube_width_x; z++)
+        for(size_t y = 0; y < g_cube_width_x; y++)
+        for(size_t x = 0; x < g_cube_width_x; x++){
 
             if((z < start_z || z >= end_z) || 
                (y < start_y || y >= end_y) || 
@@ -410,7 +410,7 @@ Test(fletcher_kernel, compute_many_step) {
     const FP dt = 0.001f;
     const FP dx = 12.5f, dy = 12.5f, dz = 12.5f;
 
-    const size_t volume_center_idx = volume_idx(g_volume_width / 2, g_volume_width / 2, g_volume_width / 2);
+    const size_t volume_center_idx = volume_idx(g_volume_width_x / 2, g_volume_width_x / 2, g_volume_width_x / 2);
     const size_t center_cube_idx = volume_to_block_idx(volume_center_idx) + block_idx(1, 1, 1);
     const size_t source_local_cube_idx = volume_to_cube_idx(volume_center_idx);
 
@@ -435,9 +435,9 @@ Test(fletcher_kernel, compute_many_step) {
         free(p_args);
         
         /* ----------- PROPAGATE -----------*/
-        for(size_t k = 1; k < g_width_in_cubes + 1; k++)
-        for(size_t j = 1; j < g_width_in_cubes + 1; j++)
-        for(size_t i = 1; i < g_width_in_cubes + 1; i++){
+        for(size_t k = 1; k < g_width_in_cubes_x + 1; k++)
+        for(size_t j = 1; j < g_width_in_cubes_x + 1; j++)
+        for(size_t i = 1; i < g_width_in_cubes_x + 1; i++){
 
             struct starpu_block_interface handles[52];
             struct starpu_block_interface* virtual_handles[52];
@@ -445,11 +445,11 @@ Test(fletcher_kernel, compute_many_step) {
             virtualize_handles(handles, virtual_handles, 52);
 
             const size_t start_z = k == 1 ? BORDER_WIDTH : 0;
-            const size_t end_z = g_cube_width - (k == g_width_in_cubes ? BORDER_WIDTH : 0);
+            const size_t end_z = g_cube_width_x - (k == g_width_in_cubes_x ? BORDER_WIDTH : 0);
             const size_t start_y = j == 1 ? BORDER_WIDTH : 0;
-            const size_t end_y = g_cube_width - (j == g_width_in_cubes ? BORDER_WIDTH : 0);
+            const size_t end_y = g_cube_width_x - (j == g_width_in_cubes_x ? BORDER_WIDTH : 0);
             const size_t start_x = i == 1 ? BORDER_WIDTH : 0;
-            const size_t end_x = g_cube_width - (i == g_width_in_cubes ? BORDER_WIDTH : 0);
+            const size_t end_x = g_cube_width_x - (i == g_width_in_cubes_x ? BORDER_WIDTH : 0);
             
             struct rtm_args* rtm_args;
             cr_assert(not(make_rtm_args(&rtm_args, 
@@ -461,9 +461,9 @@ Test(fletcher_kernel, compute_many_step) {
             rtm_kernel((void**) virtual_handles, (void*) rtm_args);
             free(rtm_args);
 
-            for(size_t z = 0; z < g_cube_width; z++)
-            for(size_t y = 0; y < g_cube_width; y++)
-            for(size_t x = 0; x < g_cube_width; x++){
+            for(size_t z = 0; z < g_cube_width_x; z++)
+            for(size_t y = 0; y < g_cube_width_x; y++)
+            for(size_t x = 0; x < g_cube_width_x; x++){
 
                 if((z < start_z || z >= end_z) || 
                 (y < start_y || y >= end_y) || 

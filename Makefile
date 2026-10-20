@@ -50,7 +50,7 @@ ifeq ($(CUDA_BACKEND), 1)
     endif
 endif
 
-ARGS = TTI 200 200 200 8 12.5 12.5 12.5 0.0001 0.001 4 0.0005
+ARGS = TTI 200 200 200 8 12.5 12.5 12.5 0.0001 0.001 56 56 56 0.0005
 
 .PHONY: all clean run print test debug valgrind lsp
 
@@ -91,7 +91,7 @@ lsp:
 
 valgrind: $(BIN)
 	@mkdir -p $(RESDIR)
-	valgrind ./$(BIN) TTI 16 16 16 4 12.5 12.5 12.5 0.001 0.1 2 0.01
+	valgrind ./$(BIN) TTI 16 16 16 4 12.5 12.5 12.5 0.001 0.1 16 16 16 0.01
 
 print:
 	@echo "Sources: $(SRCS)"

@@ -120,21 +120,21 @@ __global__ void rtm_cuda_kernel_impl(struct rtm_kernel_params p) {
         x, pwim1jp0kp0, pwip1jp0kp0, p.stride_x, 
         y, pwip0jm1kp0, pwip0jp1kp0, p.stride_y, 
         pwip1jp1kp0, pwip1jm1kp0, pwim1jp1kp0, pwim1jm1kp0,
-        p.cube_width_x, p.dxyinv
+        p.cube_width_x, p.cube_width_y, p.dxyinv
     ); 
     const FP pyz = cross_deriv_ddir(
         pwcentralt1, idx, 
         y, pwip0jm1kp0, pwip0jp1kp0, p.stride_y, 
         z, pwip0jp0km1, pwip0jp0kp1, p.stride_z, 
         pwip0jp1kp1, pwip0jp1km1, pwip0jm1kp1, pwip0jm1km1,
-        p.cube_width_y, p.dyzinv
+        p.cube_width_y, p.cube_width_z, p.dyzinv
     ); 
     const FP pxz = cross_deriv_ddir(
         pwcentralt1, idx, 
         x, pwim1jp0kp0, pwip1jp0kp0, p.stride_x, 
         z, pwip0jp0km1, pwip0jp0kp1, p.stride_z, 
         pwip1jp0kp1, pwip1jp0km1, pwim1jp0kp1, pwim1jp0km1,
-        p.cube_width_x, p.dxzinv
+        p.cube_width_x, p.cube_width_z, p.dxzinv
     ); 
 
     const FP cpxx = ch1dxx[idx] * pxx;
@@ -155,21 +155,21 @@ __global__ void rtm_cuda_kernel_impl(struct rtm_kernel_params p) {
         x, qwim1jp0kp0, qwip1jp0kp0, p.stride_x, 
         y, qwip0jm1kp0, qwip0jp1kp0, p.stride_y, 
         qwip1jp1kp0, qwip1jm1kp0, qwim1jp1kp0, qwim1jm1kp0,
-        p.cube_width_x, p.dxyinv
+        p.cube_width_x, p.cube_width_y, p.dxyinv
     ); 
     const FP qyz = cross_deriv_ddir(
         qwcentralt1, idx, 
         y, qwip0jm1kp0, qwip0jp1kp0, p.stride_y, 
         z, qwip0jp0km1, qwip0jp0kp1, p.stride_z, 
         qwip0jp1kp1, qwip0jp1km1, qwip0jm1kp1, qwip0jm1km1,
-        p.cube_width_y, p.dyzinv
+        p.cube_width_y, p.cube_width_z, p.dyzinv
     ); 
     const FP qxz = cross_deriv_ddir(
         qwcentralt1, idx, 
         x, qwim1jp0kp0, qwip1jp0kp0, p.stride_x, 
         z, qwip0jp0km1, qwip0jp0kp1, p.stride_z, 
         qwip1jp0kp1, qwip1jp0km1, qwim1jp0kp1, qwim1jp0km1,
-        p.cube_width_x, p.dxzinv
+        p.cube_width_x, p.cube_width_z, p.dxzinv
     ); 
 
     const FP cqxx = ch1dxx[idx] * qxx;

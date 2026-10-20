@@ -50,7 +50,7 @@ ATTRIBUTE FP cross_deriv_ddir(
     const size_t dir2, const FP *block_minus_d2, const FP *block_plus_d2,
     const int stride_d2, const FP *block_diagonal_plus_plus,
     const FP *block_diagonal_plus_minus, const FP *block_diagonal_minus_plus,
-    const FP *block_diagonal_minus_minus, const int cube_width,
+    const FP *block_diagonal_minus_minus, const int width1, const int width2,
     const FP dinv
 );
 
@@ -232,13 +232,13 @@ ATTRIBUTE FP cross_deriv_ddir(
     const size_t dir2, const FP* block_minus_d2, const FP* block_plus_d2, const int stride_d2,
     const FP* block_diagonal_plus_plus, const FP* block_diagonal_plus_minus, 
     const FP* block_diagonal_minus_plus, const FP* block_diagonal_minus_minus,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){
     #define MAX_MASK_NUM 1
     // assuming that truth is one
     // 0 is center, 1 is plus and 2 is minus
-    int d1 = BITMASK_PAIR(dir1 < 4, dir1 > cube_width - 1 - 4);
-    int d2 = BITMASK_PAIR(dir2 < 4, dir2 > cube_width - 1 - 4);
+    int d1 = BITMASK_PAIR(dir1 < 4, dir1 > width1 - 1 - 4);
+    int d2 = BITMASK_PAIR(dir2 < 4, dir2 > width2 - 1 - 4);
     #undef MAX_MASK_NUM
 
     #define ARGS block, base_idx, \
@@ -246,7 +246,7 @@ ATTRIBUTE FP cross_deriv_ddir(
         dir2, block_minus_d2, block_plus_d2, stride_d2, \
         block_diagonal_plus_plus, block_diagonal_plus_minus, \
         block_diagonal_minus_plus, block_diagonal_minus_minus, \
-        cube_width, dinv
+        width1, width2, dinv
 
 
     #define MAX_MASK_NUM 2

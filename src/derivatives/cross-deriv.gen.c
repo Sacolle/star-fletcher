@@ -27,15 +27,15 @@ ATTRIBUTE FP cross_deriv_neg_neg(
     const size_t dir2, const FP* block_center_neg, const FP* block_center_pos, const int stride2,
     const FP* block_pos_pos, const FP* block_pos_neg, 
     const FP* block_neg_pos, const FP* block_neg_neg,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){	
 	const int depth1 = dir1;
-	const size_t border_idx_1 = flip(0, base_idx - depth1 * stride1, stride1, cube_width);
+	const size_t border_idx_1 = flip(0, base_idx - depth1 * stride1, stride1, width1);
 	
 	const int depth2 = dir2;
-	const size_t border_idx_2 = flip(0, base_idx - depth2 * stride2, stride2, cube_width);
+	const size_t border_idx_2 = flip(0, base_idx - depth2 * stride2, stride2, width2);
 	
-	const size_t border_idx_3 = flip(0, border_idx_1 - depth2 * stride2, stride2, cube_width);
+	const size_t border_idx_3 = flip(0, border_idx_1 - depth2 * stride2, stride2, width2);
     switch (BITMASK_PAIR(depth1, depth2)){
     case BITMASK_PAIR(0, 0):
 		
@@ -703,15 +703,15 @@ ATTRIBUTE FP cross_deriv_neg_pos(
     const size_t dir2, const FP* block_center_neg, const FP* block_center_pos, const int stride2,
     const FP* block_pos_pos, const FP* block_pos_neg, 
     const FP* block_neg_pos, const FP* block_neg_neg,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){	
 	const int depth1 = dir1;
-	const size_t border_idx_1 = flip(0, base_idx - depth1 * stride1, stride1, cube_width);
+	const size_t border_idx_1 = flip(0, base_idx - depth1 * stride1, stride1, width1);
 	
-	const int depth2 = cube_width - 1 - dir2;
-	const size_t border_idx_2 = flip(cube_width - 1, base_idx + depth2 * stride2, stride2, cube_width);
+	const int depth2 = width2 - 1 - dir2;
+	const size_t border_idx_2 = flip(width2 - 1, base_idx + depth2 * stride2, stride2, width2);
 	
-	const size_t border_idx_3 = flip(cube_width - 1, border_idx_1 + depth2 * stride2, stride2, cube_width);
+	const size_t border_idx_3 = flip(width2 - 1, border_idx_1 + depth2 * stride2, stride2, width2);
     switch (BITMASK_PAIR(depth1, depth2)){
     case BITMASK_PAIR(0, 0):
 		
@@ -1379,10 +1379,10 @@ ATTRIBUTE FP cross_deriv_neg_center(
     const size_t dir2, const FP* block_center_neg, const FP* block_center_pos, const int stride2,
     const FP* block_pos_pos, const FP* block_pos_neg, 
     const FP* block_neg_pos, const FP* block_neg_neg,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){	
 	const int depth1 = dir1;
-	const size_t border_idx_1 = flip(0, base_idx - depth1 * stride1, stride1, cube_width);
+	const size_t border_idx_1 = flip(0, base_idx - depth1 * stride1, stride1, width1);
     switch (depth1){
     case 0:
 		
@@ -1558,15 +1558,15 @@ ATTRIBUTE FP cross_deriv_pos_neg(
     const size_t dir2, const FP* block_center_neg, const FP* block_center_pos, const int stride2,
     const FP* block_pos_pos, const FP* block_pos_neg, 
     const FP* block_neg_pos, const FP* block_neg_neg,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){	
-	const int depth1 = cube_width - 1 - dir1;
-	const size_t border_idx_1 = flip(cube_width - 1, base_idx + depth1 * stride1, stride1, cube_width);
+	const int depth1 = width1 - 1 - dir1;
+	const size_t border_idx_1 = flip(width1 - 1, base_idx + depth1 * stride1, stride1, width1);
 	
 	const int depth2 = dir2;
-	const size_t border_idx_2 = flip(0, base_idx - depth2 * stride2, stride2, cube_width);
+	const size_t border_idx_2 = flip(0, base_idx - depth2 * stride2, stride2, width2);
 	
-	const size_t border_idx_3 = flip(0, border_idx_1 - depth2 * stride2, stride2, cube_width);
+	const size_t border_idx_3 = flip(0, border_idx_1 - depth2 * stride2, stride2, width2);
     switch (BITMASK_PAIR(depth1, depth2)){
     case BITMASK_PAIR(0, 0):
 		
@@ -2234,15 +2234,15 @@ ATTRIBUTE FP cross_deriv_pos_pos(
     const size_t dir2, const FP* block_center_neg, const FP* block_center_pos, const int stride2,
     const FP* block_pos_pos, const FP* block_pos_neg, 
     const FP* block_neg_pos, const FP* block_neg_neg,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){	
-	const int depth1 = cube_width - 1 - dir1;
-	const size_t border_idx_1 = flip(cube_width - 1, base_idx + depth1 * stride1, stride1, cube_width);
+	const int depth1 = width1 - 1 - dir1;
+	const size_t border_idx_1 = flip(width1 - 1, base_idx + depth1 * stride1, stride1, width1);
 	
-	const int depth2 = cube_width - 1 - dir2;
-	const size_t border_idx_2 = flip(cube_width - 1, base_idx + depth2 * stride2, stride2, cube_width);
+	const int depth2 = width2 - 1 - dir2;
+	const size_t border_idx_2 = flip(width2 - 1, base_idx + depth2 * stride2, stride2, width2);
 	
-	const size_t border_idx_3 = flip(cube_width - 1, border_idx_1 + depth2 * stride2, stride2, cube_width);
+	const size_t border_idx_3 = flip(width2 - 1, border_idx_1 + depth2 * stride2, stride2, width2);
     switch (BITMASK_PAIR(depth1, depth2)){
     case BITMASK_PAIR(0, 0):
 		
@@ -2910,10 +2910,10 @@ ATTRIBUTE FP cross_deriv_pos_center(
     const size_t dir2, const FP* block_center_neg, const FP* block_center_pos, const int stride2,
     const FP* block_pos_pos, const FP* block_pos_neg, 
     const FP* block_neg_pos, const FP* block_neg_neg,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){	
-	const int depth1 = cube_width - 1 - dir1;
-	const size_t border_idx_1 = flip(cube_width - 1, base_idx + depth1 * stride1, stride1, cube_width);
+	const int depth1 = width1 - 1 - dir1;
+	const size_t border_idx_1 = flip(width1 - 1, base_idx + depth1 * stride1, stride1, width1);
     switch (depth1){
     case 0:
 		
@@ -3089,10 +3089,10 @@ ATTRIBUTE FP cross_deriv_center_neg(
     const size_t dir2, const FP* block_center_neg, const FP* block_center_pos, const int stride2,
     const FP* block_pos_pos, const FP* block_pos_neg, 
     const FP* block_neg_pos, const FP* block_neg_neg,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){	
 	const int depth2 = dir2;
-	const size_t border_idx_2 = flip(0, base_idx - depth2 * stride2, stride2, cube_width);
+	const size_t border_idx_2 = flip(0, base_idx - depth2 * stride2, stride2, width2);
     switch (depth2){
     case 0:
 		
@@ -3268,10 +3268,10 @@ ATTRIBUTE FP cross_deriv_center_pos(
     const size_t dir2, const FP* block_center_neg, const FP* block_center_pos, const int stride2,
     const FP* block_pos_pos, const FP* block_pos_neg, 
     const FP* block_neg_pos, const FP* block_neg_neg,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){	
-	const int depth2 = cube_width - 1 - dir2;
-	const size_t border_idx_2 = flip(cube_width - 1, base_idx + depth2 * stride2, stride2, cube_width);
+	const int depth2 = width2 - 1 - dir2;
+	const size_t border_idx_2 = flip(width2 - 1, base_idx + depth2 * stride2, stride2, width2);
     switch (depth2){
     case 0:
 		
@@ -3447,7 +3447,7 @@ ATTRIBUTE FP cross_deriv_center_center(
     const size_t dir2, const FP* block_center_neg, const FP* block_center_pos, const int stride2,
     const FP* block_pos_pos, const FP* block_pos_neg, 
     const FP* block_neg_pos, const FP* block_neg_neg,
-    const int cube_width, const FP dinv
+    const int width1, const int width2, const FP dinv
 ){
     	
 	

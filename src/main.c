@@ -23,21 +23,23 @@
 #define WAVE_PROPAGATION_BORDER  2
 #define WAVE_PROPAGATION_CORNER  3
 
-// width for the volume of the whole sistem
-size_t g_volume_width = 0;
-// amount of segments in a dimension. 
-// if g_volume_width = 100 and g_width_in_cubes = 10
-// there are 10 segmentations by dimension, resulting in 1000 total cubes of 
-// volume 1000
-size_t g_width_in_cubes = 0;
+// width for the volume of the whole sistem, per axis
+size_t g_volume_width_x = 0, g_volume_width_y = 0, g_volume_width_z = 0;
+// amount of segments in each dimension. 
+// if g_volume_width_x = 100 and g_cube_width_x = 10
+// there are g_width_in_cubes_x = 10 segmentations in the x axis
+size_t g_width_in_cubes_x = 0, g_width_in_cubes_y = 0, g_width_in_cubes_z = 0;
 
-// width for the segmented cube
-size_t g_cube_width = 0;
+// width for the segmented block, per axis. All blocks have the same dimensions
+size_t g_cube_width_x = 0, g_cube_width_y = 0, g_cube_width_z = 0;
 
 const size_t BORDER_WIDTH = 4;
 
-#define CUBE_SIZE (g_cube_width * g_cube_width * g_cube_width)
-#define TOTAL_CUBES (g_width_in_cubes * g_width_in_cubes * g_width_in_cubes)
+#define CUBE_SIZE (g_cube_width_x * g_cube_width_y * g_cube_width_z)
+#define TOTAL_CUBES (g_width_in_cubes_x * g_width_in_cubes_y * g_width_in_cubes_z)
+// amount of blocks in the handle arrays, with one halo block per side
+#define PADDED_TOTAL_CUBES ((g_width_in_cubes_x + 2) * (g_width_in_cubes_y + 2) * (g_width_in_cubes_z + 2))
+#define VOLUME_SIZE (g_volume_width_x * g_volume_width_y * g_volume_width_z)
 
 FP g_dt_output = FP_LIT(0.01);
 
@@ -247,9 +249,9 @@ err_t write_wave(int64_t* n_out, starpu_data_handle_t* wave_iter){
 
     err_t err = 0;
     // salva o primeiro bloco (nulo)
-    for(size_t k = 1; k < g_width_in_cubes + 1; k++)
-    for(size_t j = 1; j < g_width_in_cubes + 1; j++)
-    for(size_t i = 1; i < g_width_in_cubes + 1; i++){
+    for(size_t k = 1; k < g_width_in_cubes_z + 1; k++)
+    for(size_t j = 1; j < g_width_in_cubes_y + 1; j++)
+    for(size_t i = 1; i < g_width_in_cubes_x + 1; i++){
 
         // call the write task
         dump_block_args_t* dump_args;
@@ -356,34 +358,42 @@ int main(int argc, char **argv){
     uint32_t nx, ny, nz, absorb_width;
     FP dx, dy, dz, dt, tmax;
 
-    TRY(read_args(&argc, argv, 12, 
+    TRY(read_args(&argc, argv, 14, 
         ARG_str, &form_str, 
         ARG_u32, &nx, ARG_u32, &ny, ARG_u32, &nz, ARG_u32, &absorb_width, 
         FP_ARG, &dx, FP_ARG, &dy, FP_ARG, &dz, FP_ARG, &dt, FP_ARG, &tmax,
-        ARG_u64, &g_width_in_cubes, FP_ARG, &g_dt_output
+        ARG_u64, &g_cube_width_x, ARG_u64, &g_cube_width_y, ARG_u64, &g_cube_width_z,
+        FP_ARG, &g_dt_output
     ), "Error in parsing arg at %d\n.", argc);
 
     TRY(str_to_medium(form_str, &form), "Failed at string to medium conversion");
     
     //fazendo dessa forma para ficar igual ao fletcher base
-    g_volume_width = nx + 2 * absorb_width + 2 * BORDER_WIDTH;
+    g_volume_width_x = nx + 2 * absorb_width + 2 * BORDER_WIDTH;
+    g_volume_width_y = ny + 2 * absorb_width + 2 * BORDER_WIDTH;
+    g_volume_width_z = nz + 2 * absorb_width + 2 * BORDER_WIDTH;
 
-    // the number of segments divides the total volume
-    TRY(g_volume_width % g_width_in_cubes == 0 ? 0 : ME_COUNT_DONT_MATCH, 
-        "A largura do volume + kernel size devem ser divisíveis pela largura do segmento.\n");
+    TRY(g_cube_width_x >= 9 && g_cube_width_y >= 9 && g_cube_width_z >= 9 ? 0 : ME_COUNT_DONT_MATCH,
+        "Tamanho interno para o bloco é muito pequeno. "
+        "As funções de derivada requerem um bloco com pelo menos 9 pontos em cada eixo.\n");
 
-	g_cube_width = g_volume_width / g_width_in_cubes;
-    
-    TRY(g_cube_width > 7 ? 0 : ME_COUNT_DONT_MATCH, 
-        "Tamanho interno para o cubo é muito pequeno."
-        "As funções de derivada requerem um bloco cujo tamanho seja pelo menos 1 a menos que o tamanho do kernel, que é 9");
+    // the block width divides the total volume in each axis
+    TRY(g_volume_width_x % g_cube_width_x == 0 &&
+        g_volume_width_y % g_cube_width_y == 0 &&
+        g_volume_width_z % g_cube_width_z == 0 ? 0 : ME_COUNT_DONT_MATCH, 
+        "A largura do volume (%ld, %ld, %ld) deve ser divisível pela largura do bloco (%ld, %ld, %ld) em cada eixo.\n",
+        g_volume_width_x, g_volume_width_y, g_volume_width_z, g_cube_width_x, g_cube_width_y, g_cube_width_z);
+
+    g_width_in_cubes_x = g_volume_width_x / g_cube_width_x;
+    g_width_in_cubes_y = g_volume_width_y / g_cube_width_y;
+    g_width_in_cubes_z = g_volume_width_z / g_cube_width_z;
  
     const int64_t st = (int64_t) FP_CEIL(tmax / dt);
     // amount of iterations the program will save the block
     const size_t total_saved_moments = (size_t) FP_CEIL(tmax / g_dt_output) + 1;
 
     // the point in the global volume that the source is inserted
-    const size_t volume_propagation_idx = volume_idx(g_volume_width / 2, g_volume_width / 2, g_volume_width / 2);
+    const size_t volume_propagation_idx = volume_idx(g_volume_width_x / 2, g_volume_width_y / 2, g_volume_width_z / 2);
     DEBUG("Index of propagation is %ld.\n", volume_propagation_idx);
 
 
@@ -395,12 +405,12 @@ int main(int argc, char **argv){
     STARPU_CHECK_RETURN_VALUE(ret, "starpu_init");
 
     //init the IO here
-    TRY(io_state_init(bin_filename, 4096, total_saved_moments, g_volume_width * g_volume_width * g_volume_width));
+    TRY(io_state_init(bin_filename, 4096, total_saved_moments, VOLUME_SIZE));
 
     // mem_allocate the buffers that will be used in computing the 
     // intermediary values
     FP *vpz, *vsv, *epsilon, *delta, *phi, *theta;
-    const size_t medium_size = sizeof(FP) * CUBE(g_volume_width);
+    const size_t medium_size = sizeof(FP) * VOLUME_SIZE;
 
     TRY(mem_allocate_local(&medium_allocs, (void**) &vpz, medium_size));
     TRY(mem_allocate_local(&medium_allocs, (void**) &vsv, medium_size));
@@ -410,13 +420,13 @@ int main(int argc, char **argv){
     TRY(mem_allocate_local(&medium_allocs, (void**) &theta, medium_size));
 
     // inicialize the buffers above based on the type of medium
-    medium_initialize(form, CUBE(g_volume_width), vpz, vsv, epsilon, delta, phi, theta);
+    medium_initialize(form, VOLUME_SIZE, vpz, vsv, epsilon, delta, phi, theta);
     
     // set the absorption zone for vpz and vsv
     medium_random_velocity_boundary(BORDER_WIDTH, absorb_width, vpz, vsv);
 
     // run the stability condition for the size
-    const FP stability_condition = medium_stability_condition(dx, dy, dz, vpz, epsilon, CUBE(g_volume_width));
+    const FP stability_condition = medium_stability_condition(dx, dy, dz, vpz, epsilon, VOLUME_SIZE);
     DEBUG("The stability condition (proper value for dt) for this problem is %lf.\n", stability_condition);
 
 
@@ -453,32 +463,32 @@ int main(int argc, char **argv){
     // na hora de fazer o `starpu_block_data_register` e `starpu_data_unregister_submit`, evita os blocos de borda
     // dessa forma, dentro do loop de execução de taregas i - 1 ou i + 1 são sempre índices válidos na lista de `data_handle_t`.
     starpu_data_handle_t* p_wave_iter[3];
-    TRY(mem_allocate(&static_allocs, (void**) &p_wave_iter[0], CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &p_wave_iter[1], CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &p_wave_iter[2], CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &p_wave_iter[0], PADDED_TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &p_wave_iter[1], PADDED_TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &p_wave_iter[2], PADDED_TOTAL_CUBES * sizeof(starpu_data_handle_t)));
 
     starpu_data_handle_t* q_wave_iter[3];
-    TRY(mem_allocate(&static_allocs, (void**) &q_wave_iter[0], CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &q_wave_iter[1], CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &q_wave_iter[2], CUBE(g_width_in_cubes + 2) * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &q_wave_iter[0], PADDED_TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &q_wave_iter[1], PADDED_TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &q_wave_iter[2], PADDED_TOTAL_CUBES * sizeof(starpu_data_handle_t)));
 
     starpu_data_handle_t *hdl_ch1dxx, *hdl_ch1dyy, *hdl_ch1dzz, 
         *hdl_ch1dxy, *hdl_ch1dyz, *hdl_ch1dxz, 
         *hdl_v2px, *hdl_v2pz, *hdl_v2sz, *hdl_v2pn;
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dxx, CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dyy, CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dzz, CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dxy, CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dyz, CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dxz, CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_v2px,   CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_v2pz,   CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_v2sz,   CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
-    TRY(mem_allocate(&static_allocs, (void**) &hdl_v2pn,   CUBE(g_width_in_cubes) * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dxx, TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dyy, TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dzz, TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dxy, TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dyz, TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_ch1dxz, TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_v2px,   TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_v2pz,   TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_v2sz,   TOTAL_CUBES * sizeof(starpu_data_handle_t)));
+    TRY(mem_allocate(&static_allocs, (void**) &hdl_v2pn,   TOTAL_CUBES * sizeof(starpu_data_handle_t)));
 
 
     #define BLOCK_REGISTER(handle, ptr) starpu_block_data_register((handle), STARPU_MAIN_RAM, (uintptr_t) (ptr), \
-        g_cube_width, SQUARE(g_cube_width), g_cube_width, g_cube_width, g_cube_width, sizeof(FP))
+        g_cube_width_x, g_cube_width_x * g_cube_width_y, g_cube_width_x, g_cube_width_y, g_cube_width_z, sizeof(FP))
 
     for(size_t idx = 0; idx < TOTAL_CUBES; idx++){
         BLOCK_REGISTER(hdl_ch1dxx + idx, ch1dxx[idx]);
@@ -518,7 +528,7 @@ int main(int argc, char **argv){
     // we need to move the perturbation_source cube by one in every direction (done by volume_to_padded_block_idx)
     const size_t perturbation_source_cube = volume_to_padded_block_idx(volume_propagation_idx);
 
-    for(size_t idx = 0; idx < CUBE(g_width_in_cubes + 2); idx++){
+    for(size_t idx = 0; idx < PADDED_TOTAL_CUBES; idx++){
         BLOCK_REGISTER(p_wave_iter[0] + idx, null_block);
         BLOCK_REGISTER(q_wave_iter[0] + idx, null_block);
         // if we are initializing at the idx of the block that will be perturbed 
@@ -576,21 +586,21 @@ int main(int argc, char **argv){
 
         TRY(starpu_task_submit(perturb_task));
 
-        for(size_t k = 1; k < g_width_in_cubes + 1; k++) // z
-        for(size_t j = 1; j < g_width_in_cubes + 1; j++) // y
-        for(size_t i = 1; i < g_width_in_cubes + 1; i++){// x
+        for(size_t k = 1; k < g_width_in_cubes_z + 1; k++) // z
+        for(size_t j = 1; j < g_width_in_cubes_y + 1; j++) // y
+        for(size_t i = 1; i < g_width_in_cubes_x + 1; i++){// x
             const size_t idx = padded_block_idx(i, j, k);
 
             //add to the curr buff
             //let starpu allocate the data by setting home_node = -1 
             starpu_block_data_register(&p_wave_iter[0][idx], -1, 0,
-                g_cube_width, SQUARE(g_cube_width),
-                g_cube_width, g_cube_width, g_cube_width, sizeof(FP)
+                g_cube_width_x, g_cube_width_x * g_cube_width_y,
+                g_cube_width_x, g_cube_width_y, g_cube_width_z, sizeof(FP)
             );
 
             starpu_block_data_register(&q_wave_iter[0][idx], -1, 0,
-                g_cube_width, SQUARE(g_cube_width),
-                g_cube_width, g_cube_width, g_cube_width, sizeof(FP)
+                g_cube_width_x, g_cube_width_x * g_cube_width_y,
+                g_cube_width_x, g_cube_width_y, g_cube_width_z, sizeof(FP)
             );
 
             struct starpu_task* task = starpu_task_create();
@@ -598,20 +608,20 @@ int main(int argc, char **argv){
             task->cl = &rtm_codelet;
 
             const bool begin_z = k == 1;
-            const bool stop_z = k == g_width_in_cubes;
+            const bool stop_z = k == g_width_in_cubes_z;
             const bool begin_y = j == 1;
-            const bool stop_y = j == g_width_in_cubes;
+            const bool stop_y = j == g_width_in_cubes_y;
             const bool begin_x = i == 1;
-            const bool stop_x = i == g_width_in_cubes;
+            const bool stop_x = i == g_width_in_cubes_x;
             
             // if v == true, return the border size, else 0
             #define AS_BORDER(v) ((v) ? BORDER_WIDTH : 0)
 
             struct rtm_args* rtm_args;
             TRY(make_rtm_args(&rtm_args, 
-                AS_BORDER(begin_x), g_cube_width - AS_BORDER(stop_x),
-                AS_BORDER(begin_y), g_cube_width - AS_BORDER(stop_y),
-                AS_BORDER(begin_z), g_cube_width - AS_BORDER(stop_z),
+                AS_BORDER(begin_x), g_cube_width_x - AS_BORDER(stop_x),
+                AS_BORDER(begin_y), g_cube_width_y - AS_BORDER(stop_y),
+                AS_BORDER(begin_z), g_cube_width_z - AS_BORDER(stop_z),
                 dx, dy, dz, dt
             ));
 
@@ -729,9 +739,9 @@ int main(int argc, char **argv){
         }
 
         if(t >= 2){
-            for(size_t k = 1; k < g_width_in_cubes + 1; k++)
-            for(size_t j = 1; j < g_width_in_cubes + 1; j++)
-            for(size_t i = 1; i < g_width_in_cubes + 1; i++){
+            for(size_t k = 1; k < g_width_in_cubes_z + 1; k++)
+            for(size_t j = 1; j < g_width_in_cubes_y + 1; j++)
+            for(size_t i = 1; i < g_width_in_cubes_x + 1; i++){
                 starpu_data_unregister_submit(p_wave_iter[2][padded_block_idx(i, j, k)]);
                 starpu_data_unregister_submit(q_wave_iter[2][padded_block_idx(i, j, k)]);
             }
@@ -753,7 +763,8 @@ int main(int argc, char **argv){
 
     printf("Computation Elapsed time is: %lfs\n", total_elapsed_time);
 
-    const uint64_t samplesPropagate = CUBE(g_volume_width - 2 * BORDER_WIDTH);
+    const uint64_t samplesPropagate = (g_volume_width_x - 2 * BORDER_WIDTH) *
+        (g_volume_width_y - 2 * BORDER_WIDTH) * (g_volume_width_z - 2 * BORDER_WIDTH);
     const uint64_t totalSamples = samplesPropagate * (uint64_t) st;
 
     #define MEGA 1.0e-6
@@ -763,9 +774,9 @@ int main(int argc, char **argv){
 
 
     // cleanup all remaning handles (p_wave_iter[2] and iteraions[1])
-    for(size_t k = 1; k < g_width_in_cubes + 1; k++){
-        for(size_t j = 1; j < g_width_in_cubes + 1; j++){
-            for(size_t i = 1; i < g_width_in_cubes + 1; i++){
+    for(size_t k = 1; k < g_width_in_cubes_z + 1; k++){
+        for(size_t j = 1; j < g_width_in_cubes_y + 1; j++){
+            for(size_t i = 1; i < g_width_in_cubes_x + 1; i++){
                 starpu_data_handle_t ph1 = p_wave_iter[1][padded_block_idx(i, j, k)];
                 starpu_data_handle_t ph2 = p_wave_iter[2][padded_block_idx(i, j, k)];
 
@@ -806,15 +817,17 @@ int main(int argc, char **argv){
     fprintf(rsf_header, "in=\"%s\"\n", io_state_get_filename());
     fprintf(rsf_header, "data_format=\"native_float\"\n");
     fprintf(rsf_header, "esize=%lu\n", sizeof(float)); 
-    fprintf(rsf_header, "n1=%ld\n", g_volume_width /*sx*/);
-    fprintf(rsf_header, "n2=%ld\n", g_volume_width /*sy*/);
-    fprintf(rsf_header, "n3=%ld\n", g_volume_width /*sz*/);
+    fprintf(rsf_header, "n1=%ld\n", g_volume_width_x /*sx*/);
+    fprintf(rsf_header, "n2=%ld\n", g_volume_width_y /*sy*/);
+    fprintf(rsf_header, "n3=%ld\n", g_volume_width_z /*sz*/);
     fprintf(rsf_header, "n4=%ld\n", n_out); // TODO: validar n_out 
     fprintf(rsf_header, "d1=%f\n", dx);
     fprintf(rsf_header, "d2=%f\n", dy);
     fprintf(rsf_header, "d3=%f\n", dz);
     fprintf(rsf_header, "d4=%f\n", dt);
-    fprintf(rsf_header, "seg=%ld\n", g_width_in_cubes);
+    fprintf(rsf_header, "bx=%ld\n", g_cube_width_x);
+    fprintf(rsf_header, "by=%ld\n", g_cube_width_y);
+    fprintf(rsf_header, "bz=%ld\n", g_cube_width_z);
 
     fclose(rsf_header);
 
