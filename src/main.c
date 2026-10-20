@@ -1,4 +1,5 @@
 #include <starpu.h>
+#include <starpu_mpi.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -49,6 +50,60 @@ static inline void rotate_for_next_iter(starpu_data_handle_t* iter[3]){
     iter[2] = iter[1]; 
     iter[1] = iter[0]; 
     iter[0] = tmp; 
+}
+
+// MPI rank of this process
+int g_rank = 0;
+// owner rank of each block, indexed by block_idx(i, j, k)
+int* g_dist = NULL;
+// unique tag of each registered handle, same on every rank because the registration order is the same
+int64_t g_mpi_tag = 0;
+
+#define MPI_REGISTER(handle, owner) starpu_mpi_data_register((handle), g_mpi_tag++, (owner))
+
+// reads the distribution file, adapted from the chameleon custom distribution (icpads-2020)
+// first line is "N N N", followed by N*N lines (k outer, j inner) of N integers (along i)
+// with the node of each block, from 1 to the number of nodes
+err_t load_dist(const char* path, const size_t n, const int nranks){
+    if((g_dist = (int*) malloc(CUBE(n) * sizeof(int))) == NULL){
+        return errno;
+    }
+    if(path == NULL){
+        // without a file, everything stays on the single rank
+        if(nranks != 1){
+            return ME_MISSING_ENVVAR;
+        }
+        for(size_t idx = 0; idx < CUBE(n); idx++){
+            g_dist[idx] = 0;
+        }
+        return 0;
+    }
+    FILE* f = fopen(path, "r");
+    if(f == NULL){
+        return errno;
+    }
+    size_t m[3];
+    if(fscanf(f, "%lu %lu %lu", &m[0], &m[1], &m[2]) != 3 || m[0] != n || m[1] != n || m[2] != n){
+        fclose(f);
+        return ME_IMPROPER_INPUT;
+    }
+    for(size_t idx = 0; idx < CUBE(n); idx++){
+        if(fscanf(f, "%d", &g_dist[idx]) != 1 || g_dist[idx] < 1 || g_dist[idx] > nranks){
+            fclose(f);
+            return ME_IMPROPER_INPUT;
+        }
+        g_dist[idx] -= 1;
+    }
+    fclose(f);
+    return 0;
+}
+
+// owner of the block at padded coords (i, j, k), the padding blocks go to the closest inner block
+static inline int owner_of(size_t i, size_t j, size_t k){
+    #define CLAMP(x) ((x) < 1 ? 1 : ((x) > g_width_in_cubes ? g_width_in_cubes : (x)))
+    const int owner = g_dist[block_idx(CLAMP(i) - 1, CLAMP(j) - 1, CLAMP(k) - 1)];
+    #undef CLAMP
+    return owner;
 }
 
 
@@ -252,22 +307,19 @@ err_t write_wave(int64_t* n_out, starpu_data_handle_t* wave_iter){
     for(size_t i = 1; i < g_width_in_cubes + 1; i++){
 
         // call the write task
-        dump_block_args_t* dump_args;
-        if((err = make_dump_block_args(&dump_args, i - 1, j - 1, k - 1, *n_out)) != 0){
+        // starpu-mpi does not free the args in the ranks that do not execute the task
+        dump_block_args_t* dump_args = NULL;
+        if(owner_of(i, j, k) == g_rank && (err = make_dump_block_args(&dump_args, i - 1, j - 1, k - 1, *n_out)) != 0){
             return err;
         }
 
-        struct starpu_task* dump_block_task = starpu_task_create();
-        dump_block_task->name = "write_block";
-        dump_block_task->cl = &dump_block_codelet;
-        dump_block_task->cl_arg = dump_args;
-        dump_block_task->cl_arg_size = sizeof(dump_block_args_t);
-        dump_block_task->cl_arg_free = 1;
         //NOTE: mudado para p_wave_iter[0] para se adequar melhor com o trace do fletcher base
         //      no caso não importa pois write(t = 0) é só zeros no original
-        dump_block_task->handles[0] = wave_iter[padded_block_idx(i, j, k)];
-
-        if((err = starpu_task_submit(dump_block_task)) != 0){
+        if((err = starpu_mpi_task_insert(MPI_COMM_WORLD, &dump_block_codelet,
+            STARPU_R, wave_iter[padded_block_idx(i, j, k)],
+            STARPU_CL_ARGS, dump_args, dump_args ? sizeof(dump_block_args_t) : 0,
+            STARPU_NAME, "write_block",
+            0)) != 0){
             return err;
         };
     }
@@ -388,11 +440,23 @@ int main(int argc, char **argv){
 
 
     char bin_filename[512] = {'\0'};
-    sprintf(bin_filename, "%s/out-%s.rsf@", output_folder, output_filename);
-    printf("bin filename %s\n", bin_filename);
+    // argc and argv are not passed, read_args already overwrote argc
+    int ret = starpu_mpi_init_conf(NULL, NULL, 1, MPI_COMM_WORLD, NULL);
+    STARPU_CHECK_RETURN_VALUE(ret, "starpu_mpi_init_conf");
 
-    int ret = starpu_init(NULL);
-    STARPU_CHECK_RETURN_VALUE(ret, "starpu_init");
+    int nranks = 1;
+    starpu_mpi_comm_rank(MPI_COMM_WORLD, &g_rank);
+    starpu_mpi_comm_size(MPI_COMM_WORLD, &nranks);
+
+    char* dist_file = NULL;
+    CHECK(get_envvar(&dist_file, "DIST_FILE"), "Not setting a distribution file, every block goes to rank 0.\n");
+    TRY(load_dist(dist_file, g_width_in_cubes, nranks),
+        "Invalid distribution file %s for %ld blocks per dimension and %d ranks.\n",
+        dist_file ? dist_file : "(none)", g_width_in_cubes, nranks);
+
+    // each rank writes the blocks it owns in its own file, the full volume is their sum
+    sprintf(bin_filename, "%s/out-%s-r%d.rsf@", output_folder, output_filename, g_rank);
+    printf("bin filename %s\n", bin_filename);
 
     //init the IO here
     TRY(io_state_init(bin_filename, 4096, total_saved_moments, g_volume_width * g_volume_width * g_volume_width));
@@ -491,6 +555,17 @@ int main(int argc, char **argv){
         BLOCK_REGISTER(hdl_v2pz + idx, v2pz[idx]);
         BLOCK_REGISTER(hdl_v2sz + idx, v2sz[idx]);
         BLOCK_REGISTER(hdl_v2pn + idx, v2pn[idx]);
+
+        MPI_REGISTER(hdl_ch1dxx[idx], g_dist[idx]);
+        MPI_REGISTER(hdl_ch1dyy[idx], g_dist[idx]);
+        MPI_REGISTER(hdl_ch1dzz[idx], g_dist[idx]);
+        MPI_REGISTER(hdl_ch1dxy[idx], g_dist[idx]);
+        MPI_REGISTER(hdl_ch1dyz[idx], g_dist[idx]);
+        MPI_REGISTER(hdl_ch1dxz[idx], g_dist[idx]);
+        MPI_REGISTER(hdl_v2px[idx], g_dist[idx]);
+        MPI_REGISTER(hdl_v2pz[idx], g_dist[idx]);
+        MPI_REGISTER(hdl_v2sz[idx], g_dist[idx]);
+        MPI_REGISTER(hdl_v2pn[idx], g_dist[idx]);
     }
 
     // alocate the initial values for the waves pp, pc, qp, qc.
@@ -532,6 +607,13 @@ int main(int argc, char **argv){
         }
         BLOCK_REGISTER(p_wave_iter[2] + idx, null_block);
         BLOCK_REGISTER(q_wave_iter[2] + idx, null_block);
+
+        const size_t padded_width = g_width_in_cubes + 2;
+        const int owner = owner_of(idx % padded_width, (idx / padded_width) % padded_width, idx / SQUARE(padded_width));
+        for(size_t it = 0; it < 3; it++){
+            MPI_REGISTER(p_wave_iter[it][idx], owner);
+            MPI_REGISTER(q_wave_iter[it][idx], owner);
+        }
     }
 
     #undef BLOCK_REGISTER 
@@ -549,6 +631,7 @@ int main(int argc, char **argv){
         TRY(write_wave(&n_out, p_wave_iter[0]));
     }
 
+    starpu_mpi_barrier(MPI_COMM_WORLD);
     const uint64_t start_time = get_timestamp_ns();
 
     for(int64_t t = 1; t <= st; t++){
@@ -558,23 +641,19 @@ int main(int argc, char **argv){
         //mover para aqui a inserção da fonte
 
         // task that insert the perturbation on the handle
-        struct starpu_task* perturb_task = starpu_task_create();
-        perturb_task->name = "wave_insertion";
-
         const FP source_value = medium_source_value(dt, t - 1);
-        perturb_args_t* perturb_args;
-        TRY(make_perturb_args(&perturb_args, perturbation_source_pos, source_value, t - 1));
-
-        perturb_task->cl = &insert_perturbation_codelet;
-        perturb_task->cl_arg = perturb_args;
-        perturb_task->cl_arg_size = sizeof(perturb_args_t);
-        perturb_task->cl_arg_free = 1; // free the args after use
+        perturb_args_t* perturb_args = NULL;
+        if(starpu_mpi_data_get_rank(p_wave_iter[1][perturbation_source_cube]) == g_rank){
+            TRY(make_perturb_args(&perturb_args, perturbation_source_pos, source_value, t - 1));
+        }
 
         // insert in the $A_{t-1}$ wave that will be used for computing the A_t
-        perturb_task->handles[0] = p_wave_iter[1][perturbation_source_cube];
-        perturb_task->handles[1] = q_wave_iter[1][perturbation_source_cube];
-
-        TRY(starpu_task_submit(perturb_task));
+        TRY(starpu_mpi_task_insert(MPI_COMM_WORLD, &insert_perturbation_codelet,
+            STARPU_RW, p_wave_iter[1][perturbation_source_cube],
+            STARPU_RW, q_wave_iter[1][perturbation_source_cube],
+            STARPU_CL_ARGS, perturb_args, perturb_args ? sizeof(perturb_args_t) : 0, // free the args after use
+            STARPU_NAME, "wave_insertion",
+            0));
 
         for(size_t k = 1; k < g_width_in_cubes + 1; k++) // z
         for(size_t j = 1; j < g_width_in_cubes + 1; j++) // y
@@ -593,9 +672,11 @@ int main(int argc, char **argv){
                 g_cube_width, g_cube_width, g_cube_width, sizeof(FP)
             );
 
-            struct starpu_task* task = starpu_task_create();
-            task->name = "wave_propagation";
-            task->cl = &rtm_codelet;
+            const int owner = owner_of(i, j, k);
+            MPI_REGISTER(p_wave_iter[0][idx], owner);
+            MPI_REGISTER(q_wave_iter[0][idx], owner);
+
+            starpu_data_handle_t handles[52];
 
             const bool begin_z = k == 1;
             const bool stop_z = k == g_width_in_cubes;
@@ -607,22 +688,20 @@ int main(int argc, char **argv){
             // if v == true, return the border size, else 0
             #define AS_BORDER(v) ((v) ? BORDER_WIDTH : 0)
 
-            struct rtm_args* rtm_args;
-            TRY(make_rtm_args(&rtm_args, 
-                AS_BORDER(begin_x), g_cube_width - AS_BORDER(stop_x),
-                AS_BORDER(begin_y), g_cube_width - AS_BORDER(stop_y),
-                AS_BORDER(begin_z), g_cube_width - AS_BORDER(stop_z),
-                dx, dy, dz, dt
-            ));
-
-            task->cl_arg = rtm_args;
-            task->cl_arg_size = sizeof(struct rtm_args);
-            task->cl_arg_free = 1; // free the args after use
+            // starpu-mpi does not free the args in the ranks that do not execute the task
+            struct rtm_args* rtm_args = NULL;
+            if(owner == g_rank){
+                TRY(make_rtm_args(&rtm_args,
+                    AS_BORDER(begin_x), g_cube_width - AS_BORDER(stop_x),
+                    AS_BORDER(begin_y), g_cube_width - AS_BORDER(stop_y),
+                    AS_BORDER(begin_z), g_cube_width - AS_BORDER(stop_z),
+                    dx, dy, dz, dt
+                ));
+            }
 
             #undef AS_BORDER
 
-            task->use_tag = 1;
-            task->tag_id = 
+            const starpu_tag_t tag_id =
                 (begin_z || stop_z ? 1 : 0) +
                 (begin_y || stop_y ? 1 : 0) +
                 (begin_x || stop_x ? 1 : 0);
@@ -646,74 +725,79 @@ int main(int argc, char **argv){
 
             //pre computed values do not have a border and have to be adjusted as such
             const size_t precomp_idx = block_idx(i - 1, j - 1, k - 1);
-            task->handles[0] = hdl_ch1dxx[precomp_idx];
-            task->handles[1] = hdl_ch1dyy[precomp_idx];
-            task->handles[2] = hdl_ch1dzz[precomp_idx];
-            task->handles[3] = hdl_ch1dxy[precomp_idx];
-            task->handles[4] = hdl_ch1dyz[precomp_idx];
-            task->handles[5] = hdl_ch1dxz[precomp_idx];
-            task->handles[6] = hdl_v2px[precomp_idx];
-            task->handles[7] = hdl_v2pz[precomp_idx];
-            task->handles[8] = hdl_v2sz[precomp_idx];
-            task->handles[9] = hdl_v2pn[precomp_idx];
+            handles[0] = hdl_ch1dxx[precomp_idx];
+            handles[1] = hdl_ch1dyy[precomp_idx];
+            handles[2] = hdl_ch1dzz[precomp_idx];
+            handles[3] = hdl_ch1dxy[precomp_idx];
+            handles[4] = hdl_ch1dyz[precomp_idx];
+            handles[5] = hdl_ch1dxz[precomp_idx];
+            handles[6] = hdl_v2px[precomp_idx];
+            handles[7] = hdl_v2pz[precomp_idx];
+            handles[8] = hdl_v2sz[precomp_idx];
+            handles[9] = hdl_v2pn[precomp_idx];
 
             // p wave blocks
-            task->handles[10] = p_wave_iter[0][idx]; // write block
+            handles[10] = p_wave_iter[0][idx]; // write block
 
-            task->handles[11] = p_wave_iter[1][idx]; //central block when t - 1
+            handles[11] = p_wave_iter[1][idx]; //central block when t - 1
 
-            task->handles[12] = p_wave_iter[1][padded_block_idx(i + 0, j + 0, k - 1)];
-            task->handles[13] = p_wave_iter[1][padded_block_idx(i + 0, j - 1, k - 1)];
-            task->handles[14] = p_wave_iter[1][padded_block_idx(i - 1, j + 0, k - 1)];
-            task->handles[15] = p_wave_iter[1][padded_block_idx(i + 1, j + 0, k - 1)];
-            task->handles[16] = p_wave_iter[1][padded_block_idx(i + 0, j + 1, k - 1)];
+            handles[12] = p_wave_iter[1][padded_block_idx(i + 0, j + 0, k - 1)];
+            handles[13] = p_wave_iter[1][padded_block_idx(i + 0, j - 1, k - 1)];
+            handles[14] = p_wave_iter[1][padded_block_idx(i - 1, j + 0, k - 1)];
+            handles[15] = p_wave_iter[1][padded_block_idx(i + 1, j + 0, k - 1)];
+            handles[16] = p_wave_iter[1][padded_block_idx(i + 0, j + 1, k - 1)];
 
-            task->handles[17] = p_wave_iter[1][padded_block_idx(i - 1, j - 1, k + 0)];
-            task->handles[18] = p_wave_iter[1][padded_block_idx(i + 0, j - 1, k + 0)];
-            task->handles[19] = p_wave_iter[1][padded_block_idx(i + 1, j - 1, k + 0)];
-            task->handles[20] = p_wave_iter[1][padded_block_idx(i - 1, j + 0, k + 0)];
-            task->handles[21] = p_wave_iter[1][padded_block_idx(i + 1, j + 0, k + 0)];
-            task->handles[22] = p_wave_iter[1][padded_block_idx(i - 1, j + 1, k + 0)];
-            task->handles[23] = p_wave_iter[1][padded_block_idx(i + 0, j + 1, k + 0)];
-            task->handles[24] = p_wave_iter[1][padded_block_idx(i + 1, j + 1, k + 0)];
+            handles[17] = p_wave_iter[1][padded_block_idx(i - 1, j - 1, k + 0)];
+            handles[18] = p_wave_iter[1][padded_block_idx(i + 0, j - 1, k + 0)];
+            handles[19] = p_wave_iter[1][padded_block_idx(i + 1, j - 1, k + 0)];
+            handles[20] = p_wave_iter[1][padded_block_idx(i - 1, j + 0, k + 0)];
+            handles[21] = p_wave_iter[1][padded_block_idx(i + 1, j + 0, k + 0)];
+            handles[22] = p_wave_iter[1][padded_block_idx(i - 1, j + 1, k + 0)];
+            handles[23] = p_wave_iter[1][padded_block_idx(i + 0, j + 1, k + 0)];
+            handles[24] = p_wave_iter[1][padded_block_idx(i + 1, j + 1, k + 0)];
 
-            task->handles[25] = p_wave_iter[1][padded_block_idx(i + 0, j + 0, k + 1)];
-            task->handles[26] = p_wave_iter[1][padded_block_idx(i + 0, j - 1, k + 1)];
-            task->handles[27] = p_wave_iter[1][padded_block_idx(i - 1, j + 0, k + 1)];
-            task->handles[28] = p_wave_iter[1][padded_block_idx(i + 1, j + 0, k + 1)];
-            task->handles[29] = p_wave_iter[1][padded_block_idx(i + 0, j + 1, k + 1)];
+            handles[25] = p_wave_iter[1][padded_block_idx(i + 0, j + 0, k + 1)];
+            handles[26] = p_wave_iter[1][padded_block_idx(i + 0, j - 1, k + 1)];
+            handles[27] = p_wave_iter[1][padded_block_idx(i - 1, j + 0, k + 1)];
+            handles[28] = p_wave_iter[1][padded_block_idx(i + 1, j + 0, k + 1)];
+            handles[29] = p_wave_iter[1][padded_block_idx(i + 0, j + 1, k + 1)];
 
-            task->handles[30] = p_wave_iter[2][idx]; //central block when t - 2
+            handles[30] = p_wave_iter[2][idx]; //central block when t - 2
 
             // q wave blocks
-            task->handles[31] = q_wave_iter[0][idx]; // write block
+            handles[31] = q_wave_iter[0][idx]; // write block
 
-            task->handles[32] = q_wave_iter[1][idx]; //central block when t - 1
+            handles[32] = q_wave_iter[1][idx]; //central block when t - 1
 
-            task->handles[33] = q_wave_iter[1][padded_block_idx(i + 0, j + 0, k - 1)];
-            task->handles[34] = q_wave_iter[1][padded_block_idx(i + 0, j - 1, k - 1)];
-            task->handles[35] = q_wave_iter[1][padded_block_idx(i - 1, j + 0, k - 1)];
-            task->handles[36] = q_wave_iter[1][padded_block_idx(i + 1, j + 0, k - 1)];
-            task->handles[37] = q_wave_iter[1][padded_block_idx(i + 0, j + 1, k - 1)];
+            handles[33] = q_wave_iter[1][padded_block_idx(i + 0, j + 0, k - 1)];
+            handles[34] = q_wave_iter[1][padded_block_idx(i + 0, j - 1, k - 1)];
+            handles[35] = q_wave_iter[1][padded_block_idx(i - 1, j + 0, k - 1)];
+            handles[36] = q_wave_iter[1][padded_block_idx(i + 1, j + 0, k - 1)];
+            handles[37] = q_wave_iter[1][padded_block_idx(i + 0, j + 1, k - 1)];
 
-            task->handles[38] = q_wave_iter[1][padded_block_idx(i - 1, j - 1, k + 0)];
-            task->handles[39] = q_wave_iter[1][padded_block_idx(i + 0, j - 1, k + 0)];
-            task->handles[40] = q_wave_iter[1][padded_block_idx(i + 1, j - 1, k + 0)];
-            task->handles[41] = q_wave_iter[1][padded_block_idx(i - 1, j + 0, k + 0)];
-            task->handles[42] = q_wave_iter[1][padded_block_idx(i + 1, j + 0, k + 0)];
-            task->handles[43] = q_wave_iter[1][padded_block_idx(i - 1, j + 1, k + 0)];
-            task->handles[44] = q_wave_iter[1][padded_block_idx(i + 0, j + 1, k + 0)];
-            task->handles[45] = q_wave_iter[1][padded_block_idx(i + 1, j + 1, k + 0)];
+            handles[38] = q_wave_iter[1][padded_block_idx(i - 1, j - 1, k + 0)];
+            handles[39] = q_wave_iter[1][padded_block_idx(i + 0, j - 1, k + 0)];
+            handles[40] = q_wave_iter[1][padded_block_idx(i + 1, j - 1, k + 0)];
+            handles[41] = q_wave_iter[1][padded_block_idx(i - 1, j + 0, k + 0)];
+            handles[42] = q_wave_iter[1][padded_block_idx(i + 1, j + 0, k + 0)];
+            handles[43] = q_wave_iter[1][padded_block_idx(i - 1, j + 1, k + 0)];
+            handles[44] = q_wave_iter[1][padded_block_idx(i + 0, j + 1, k + 0)];
+            handles[45] = q_wave_iter[1][padded_block_idx(i + 1, j + 1, k + 0)];
 
-            task->handles[46] = q_wave_iter[1][padded_block_idx(i + 0, j + 0, k + 1)];
-            task->handles[47] = q_wave_iter[1][padded_block_idx(i + 0, j - 1, k + 1)];
-            task->handles[48] = q_wave_iter[1][padded_block_idx(i - 1, j + 0, k + 1)];
-            task->handles[49] = q_wave_iter[1][padded_block_idx(i + 1, j + 0, k + 1)];
-            task->handles[50] = q_wave_iter[1][padded_block_idx(i + 0, j + 1, k + 1)];
+            handles[46] = q_wave_iter[1][padded_block_idx(i + 0, j + 0, k + 1)];
+            handles[47] = q_wave_iter[1][padded_block_idx(i + 0, j - 1, k + 1)];
+            handles[48] = q_wave_iter[1][padded_block_idx(i - 1, j + 0, k + 1)];
+            handles[49] = q_wave_iter[1][padded_block_idx(i + 1, j + 0, k + 1)];
+            handles[50] = q_wave_iter[1][padded_block_idx(i + 0, j + 1, k + 1)];
 
-            task->handles[51] = q_wave_iter[2][idx]; //central block when t - 2
+            handles[51] = q_wave_iter[2][idx]; //central block when t - 2
 
-            TRY(starpu_task_submit(task));
+            TRY(starpu_mpi_task_insert(MPI_COMM_WORLD, &rtm_codelet,
+                STARPU_DATA_ARRAY, handles, 52,
+                STARPU_CL_ARGS, rtm_args, rtm_args ? sizeof(struct rtm_args) : 0, // free the args after use
+                STARPU_TAG, tag_id,
+                STARPU_NAME, "wave_propagation",
+                0));
         }
 
         //starpu_task_wait_for_all(); // Force syncronize
@@ -745,13 +829,12 @@ int main(int argc, char **argv){
     }
     DEBUG("Submitted all tasks\n");
     //at least after all iterations
-    starpu_task_wait_for_all();
+    starpu_mpi_wait_for_all(MPI_COMM_WORLD);
+    starpu_mpi_barrier(MPI_COMM_WORLD);
 
     const uint64_t end_time = get_timestamp_ns();
 
     const double total_elapsed_time = elapsed_seconds(end_time, start_time);
-
-    printf("Computation Elapsed time is: %lfs\n", total_elapsed_time);
 
     const uint64_t samplesPropagate = CUBE(g_volume_width - 2 * BORDER_WIDTH);
     const uint64_t totalSamples = samplesPropagate * (uint64_t) st;
@@ -759,7 +842,10 @@ int main(int argc, char **argv){
     #define MEGA 1.0e-6
     const double mega_samples = (MEGA * (double) totalSamples) / total_elapsed_time;
 
-    printf("Msamples/s: %lf\n", mega_samples);
+    if(g_rank == 0){
+        printf("Computation Elapsed time is: %lfs\n", total_elapsed_time);
+        printf("Msamples/s: %lf\n", mega_samples);
+    }
 
 
     // cleanup all remaning handles (p_wave_iter[2] and iteraions[1])
@@ -799,7 +885,7 @@ int main(int argc, char **argv){
     //Write the header file
     FILE *rsf_header = NULL;
     char filename[512] = {'\0'};
-    sprintf(filename, "%s/out-%s.rsf", output_folder, output_filename);
+    sprintf(filename, "%s/out-%s-r%d.rsf", output_folder, output_filename, g_rank);
 
     TRY((rsf_header = fopen(filename, "w+")) == NULL);
 
@@ -823,7 +909,8 @@ int main(int argc, char **argv){
 
     mem_free(&medium_allocs);
     mem_free(&static_allocs);
-    starpu_shutdown();
+    free(g_dist);
+    starpu_mpi_shutdown();
     assert(io_state_finish() == 0);
     return program_status;
 }
