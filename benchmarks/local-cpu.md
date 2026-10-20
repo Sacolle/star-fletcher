@@ -16,17 +16,17 @@ Reference numbers for comparing later executions on the same machine.
 
 ## Results (2026-10-20)
 
-| Version | Blocks (bx×by×bz) | # blocks | Median time (s) | Median Msamples/s | Runs (s) |
-|---|---|---|---|---|---|
-| main | 56×56×56 | 64 | 48.96 | 20.58 | 47.22, 48.96, 50.16 |
-| main (rerun at the end) | 56×56×56 | 64 | 49.60 | 20.32 | 49.60, 49.37, 49.77 |
-| block-shapes | 56×56×56 | 64 | 50.65 | 19.90 | 49.65, 50.65, 51.22 |
-| block-shapes | 112×56×28 | 64 | 50.45 | 19.97 | 50.76, 50.45, 50.37 |
-| block-shapes | 28×56×112 | 64 | 51.78 | 19.46 | 51.20, 51.78, 51.89 |
-| block-shapes | 224×56×14 | 64 | 65.16 | 15.47 | 59.68, 65.16, 69.71 (*) |
-| block-shapes | 224×28×28 | 64 | 50.49 | 19.96 | 50.47, 50.49, 50.40 |
-| block-shapes | 32×32×32 | 343 | 54.98 | 18.33 | 54.92, 55.47, 54.98 |
-| block-shapes | 112×112×112 | 8 | 50.22 | 20.07 | 50.22, 50.22, 50.21 |
+| Version | Blocks (bx×by×bz) | # blocks | Block surface (points²) | 56³ surface / block surface | Median time (s) | Median Msamples/s | Runs (s) |
+|---|---|---|---|---|---|---|---|
+| main | 56×56×56 | 64 | 18816 | 1.000 | 48.96 | 20.58 | 47.22, 48.96, 50.16 |
+| main (rerun at the end) | 56×56×56 | 64 | 18816 | 1.000 | 49.60 | 20.32 | 49.60, 49.37, 49.77 |
+| block-shapes | 56×56×56 | 64 | 18816 | 1.000 | 50.65 | 19.90 | 49.65, 50.65, 51.22 |
+| block-shapes | 112×56×28 | 64 | 21952 | 0.857 | 50.45 | 19.97 | 50.76, 50.45, 50.37 |
+| block-shapes | 28×56×112 | 64 | 21952 | 0.857 | 51.78 | 19.46 | 51.20, 51.78, 51.89 |
+| block-shapes | 224×56×14 | 64 | 32928 | 0.571 | 65.16 | 15.47 | 59.68, 65.16, 69.71 (*) |
+| block-shapes | 224×28×28 | 64 | 26656 | 0.706 | 50.49 | 19.96 | 50.47, 50.49, 50.40 |
+| block-shapes | 32×32×32 | 343 | 6144 | 3.063 | 54.98 | 18.33 | 54.92, 55.47, 54.98 |
+| block-shapes | 112×112×112 | 8 | 75264 | 0.250 | 50.22 | 20.07 | 50.22, 50.22, 50.21 |
 
 (*) Runs got slower one after the other (warm-up 54.2 s). This is the only configuration that drifted
 like this, so it should be rerun before drawing conclusions about it.
@@ -36,3 +36,5 @@ like this, so it should be rerun before drawing conclusions about it.
   Differences under ~5% between configurations are within run-to-run variation on this machine.
 - block-shapes with 56³ cubes produces bit-identical output to main (same MD5 of the `.rsf@`),
   so any time difference between them is noise or code generation, not a different computation.
+- Block surface is the surface area of one block, 2·(bx·by + by·bz + bx·bz). The ratio column is
+  18816 (the surface of a 56³ block) divided by that value.
