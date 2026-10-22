@@ -312,6 +312,10 @@ err_t write_wave(int64_t* n_out, starpu_data_handle_t* wave_iter){
 
 int main(int argc, char **argv){
 
+    // line buffer stdout, so the logs are not lost if the process is killed
+    // while the output is redirected to a file
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
     const uint64_t initialization_start_time = get_timestamp_ns();
     srand(RANDOM_SEED);
 
@@ -379,8 +383,6 @@ int main(int argc, char **argv){
         "As funções de derivada requerem um bloco cujo tamanho seja pelo menos 1 a menos que o tamanho do kernel, que é 9");
  
     const int64_t st = (int64_t) FP_CEIL(tmax / dt);
-    // amount of iterations the program will save the block
-    const size_t total_saved_moments = (size_t) FP_CEIL(tmax / g_dt_output) + 1;
 
     // the point in the global volume that the source is inserted
     const size_t volume_propagation_idx = volume_idx(g_volume_width / 2, g_volume_width / 2, g_volume_width / 2);
@@ -389,13 +391,22 @@ int main(int argc, char **argv){
 
     char bin_filename[512] = {'\0'};
     sprintf(bin_filename, "%s/out-%s.rsf@", output_folder, output_filename);
-    printf("bin filename %s\n", bin_filename);
 
     int ret = starpu_init(NULL);
     STARPU_CHECK_RETURN_VALUE(ret, "starpu_init");
 
-    //init the IO here
-    TRY(io_state_init(bin_filename, 4096, total_saved_moments, g_volume_width * g_volume_width * g_volume_width));
+    //init the IO here, only if it will be used
+    if(enable_io){
+        printf("bin filename %s\n", bin_filename);
+
+        // with output time 0, tmax / g_dt_output is inf, and casting it to size_t is UB
+        TRY(g_dt_output > FP_LIT(0.0) ? 0 : ME_IMPROPER_INPUT,
+            "Output time must be greater than 0 when IO is enabled.\n");
+
+        // amount of iterations the program will save the block
+        const size_t total_saved_moments = (size_t) FP_CEIL(tmax / g_dt_output) + 1;
+        TRY(io_state_init(bin_filename, 4096, total_saved_moments, g_volume_width * g_volume_width * g_volume_width));
+    }
 
     // mem_allocate the buffers that will be used in computing the 
     // intermediary values
@@ -796,27 +807,29 @@ int main(int argc, char **argv){
         }
     }
 
-    //Write the header file
-    FILE *rsf_header = NULL;
-    char filename[512] = {'\0'};
-    sprintf(filename, "%s/out-%s.rsf", output_folder, output_filename);
+    //Write the header file, only if there is a binary file for it to describe
+    if(enable_io){
+        FILE *rsf_header = NULL;
+        char filename[512] = {'\0'};
+        sprintf(filename, "%s/out-%s.rsf", output_folder, output_filename);
 
-    TRY((rsf_header = fopen(filename, "w+")) == NULL);
+        TRY((rsf_header = fopen(filename, "w+")) == NULL);
 
-    fprintf(rsf_header, "in=\"%s\"\n", io_state_get_filename());
-    fprintf(rsf_header, "data_format=\"native_float\"\n");
-    fprintf(rsf_header, "esize=%lu\n", sizeof(float)); 
-    fprintf(rsf_header, "n1=%ld\n", g_volume_width /*sx*/);
-    fprintf(rsf_header, "n2=%ld\n", g_volume_width /*sy*/);
-    fprintf(rsf_header, "n3=%ld\n", g_volume_width /*sz*/);
-    fprintf(rsf_header, "n4=%ld\n", n_out); // TODO: validar n_out 
-    fprintf(rsf_header, "d1=%f\n", dx);
-    fprintf(rsf_header, "d2=%f\n", dy);
-    fprintf(rsf_header, "d3=%f\n", dz);
-    fprintf(rsf_header, "d4=%f\n", dt);
-    fprintf(rsf_header, "seg=%ld\n", g_width_in_cubes);
+        fprintf(rsf_header, "in=\"%s\"\n", io_state_get_filename());
+        fprintf(rsf_header, "data_format=\"native_float\"\n");
+        fprintf(rsf_header, "esize=%lu\n", sizeof(float));
+        fprintf(rsf_header, "n1=%ld\n", g_volume_width /*sx*/);
+        fprintf(rsf_header, "n2=%ld\n", g_volume_width /*sy*/);
+        fprintf(rsf_header, "n3=%ld\n", g_volume_width /*sz*/);
+        fprintf(rsf_header, "n4=%ld\n", n_out); // TODO: validar n_out
+        fprintf(rsf_header, "d1=%f\n", dx);
+        fprintf(rsf_header, "d2=%f\n", dy);
+        fprintf(rsf_header, "d3=%f\n", dz);
+        fprintf(rsf_header, "d4=%f\n", dt);
+        fprintf(rsf_header, "seg=%ld\n", g_width_in_cubes);
 
-    fclose(rsf_header);
+        fclose(rsf_header);
+    }
 
 
     program_end:
