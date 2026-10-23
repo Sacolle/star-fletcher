@@ -389,23 +389,19 @@ int main(int argc, char **argv){
     DEBUG("Index of propagation is %ld.\n", volume_propagation_idx);
 
 
-    char bin_filename[512] = {'\0'};
-    sprintf(bin_filename, "%s/out-%s.rsf@", output_folder, output_filename);
-
     int ret = starpu_init(NULL);
     STARPU_CHECK_RETURN_VALUE(ret, "starpu_init");
 
     //init the IO here, only if it will be used
     if(enable_io){
-        printf("bin filename %s\n", bin_filename);
-
-        // with output time 0, tmax / g_dt_output is inf, and casting it to size_t is UB
+        // with output time 0, every iteration would be dumped
         TRY(g_dt_output > FP_LIT(0.0) ? 0 : ME_IMPROPER_INPUT,
             "Output time must be greater than 0 when IO is enabled.\n");
 
-        // amount of iterations the program will save the block
-        const size_t total_saved_moments = (size_t) FP_CEIL(tmax / g_dt_output) + 1;
-        TRY(io_state_init(bin_filename, 4096, total_saved_moments, g_volume_width * g_volume_width * g_volume_width));
+        // each worker writes its blocks in its own file, needs starpu initialized
+        TRY(io_state_init(output_folder, output_filename, g_volume_width),
+            "Failed to open the worker files at %s (O_DIRECT may not be supported).\n", output_folder);
+        printf("bin filename %s (build it with scripts/congeal.py)\n", io_state_get_filename());
     }
 
     // mem_allocate the buffers that will be used in computing the 
@@ -836,8 +832,13 @@ int main(int argc, char **argv){
 
     mem_free(&medium_allocs);
     mem_free(&static_allocs);
+    // closes the worker files and writes the block index
+    err_t io_err = io_state_finish();
+    if(io_err != 0){
+        printf("[error] Failed to finish the IO with error %ld: %s\n", io_err, err_name(io_err));
+        program_status = EXIT_FAILURE;
+    }
     starpu_shutdown();
-    assert(io_state_finish() == 0);
     return program_status;
 }
 
