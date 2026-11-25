@@ -22,6 +22,9 @@ typedef int64_t err_t;
 #define ME_COUNT_DONT_MATCH MY_ERR(7)
 #define ME_REINITILIZATION  MY_ERR(8)
 
+//if exp != 0, run body and goto tag
+#define TRYTO(exp, body, tag) if((exp) != 0) { body; goto tag; }
+
 
 //to use the error name function, add #define ERR_NAME_IMPL in one of the project files
 #ifdef ERR_NAME_IMPL

@@ -2,45 +2,54 @@
 
 #include "kernel.h"
 #include "floatingpoint.h"
-#include "macros.h"
-#include "derivatives.h"
+#include "indexing.h"
+#include "halo.h"
+#include "stencil.h"
 #include <errno.h>
+#include <math.h>
 
 
-err_t make_rtm_args(rtm_args_t** rtm_args, 
-    const size_t x_start, const size_t x_end,
-    const size_t y_start, const size_t y_end,
-    const size_t z_start, const size_t z_end,
-    const FP dx, const FP dy, const FP dz, const FP dt
-){
+err_t make_rtm_args(rtm_args_t** rtm_args, const rtm_args_t* values){
     *rtm_args = (rtm_args_t*) malloc(sizeof(rtm_args_t));
     if(*rtm_args == NULL){
         return errno;
     }
-    **rtm_args = (rtm_args_t){
-        .x_start = x_start, .x_end = x_end,
-        .y_start = y_start, .y_end = y_end,
-        .z_start = z_start, .z_end = z_end,
-        .dx = dx, .dy = dy, .dz = dz, .dt = dt
-    };
+    **rtm_args = *values;
     return 0;
 }
 
-
-err_t make_perturb_args(perturb_args_t** perturb_args, const size_t idx, const FP value, const size_t t){
-    *perturb_args = (perturb_args_t*) malloc(sizeof(perturb_args_t));
-    if(*perturb_args == NULL){
+err_t make_pack_args(pack_args_t** pack_args, uint32_t neighbor_mask){
+    *pack_args = (pack_args_t*) malloc(sizeof(pack_args_t));
+    if(*pack_args == NULL){
         return errno;
     }
-    (*perturb_args)->source_idx = idx;
-    (*perturb_args)->perturb_value = value;
-    (*perturb_args)->t = t;
+    (*pack_args)->neighbor_mask = neighbor_mask;
     return 0;
+}
+
+// copies the borders of the p and q blocks into the slabs sent to each existing neighbor,
+// the slabs are the buffers first_buffer, first_buffer + 1, ... in the order of NEIGHBOR_OFFSETS
+static void pack_sent_slabs(
+    void *descr[], int first_buffer, uint32_t neighbor_mask,
+    const FP* p_wave, const FP* q_wave, size_t ldy, size_t ldz
+){
+    int slab_position = 0;
+    for(int table_index = 0; table_index < NEIGHBOR_COUNT; table_index++){
+        // skip it doesnt have the neighbor
+        if(!(neighbor_mask & NBIT(table_index))) continue;
+        const ivec3_t offset = NEIGHBOR_OFFSETS[table_index];
+        void* slab = descr[first_buffer + slab_position++];
+	// put the p and q wave parts into the slab
+        halo_pack_slab(p_wave, q_wave, ldy, ldz, offset,
+            (FP*) STARPU_TENSOR_GET_PTR(slab),
+            STARPU_TENSOR_GET_LDY(slab), STARPU_TENSOR_GET_LDZ(slab), STARPU_TENSOR_GET_LDT(slab));
+    }
 }
 
 void rtm_kernel(void *descr[], void *cl_args){
-    // do stuff here
     const rtm_args_t* args = (rtm_args_t*) cl_args;
+    const uint32_t neighbor_mask = args->neighbor_mask;
+    const int neighbor_count = __builtin_popcount(neighbor_mask);
 
     const size_t x_start = args->x_start;
     const size_t y_start = args->y_start;
@@ -61,128 +70,125 @@ void rtm_kernel(void *descr[], void *cl_args){
     const FP dxzinv = FP_LIT(1.0) / (dx * dz);
     const FP dyzinv = FP_LIT(1.0) / (dy * dz);
 
-    const size_t cube_width_x = STARPU_BLOCK_GET_NX(descr[0]);
-    const size_t cube_width_y = STARPU_BLOCK_GET_NY(descr[0]);
-    const size_t cube_width_z = STARPU_BLOCK_GET_NZ(descr[0]);
+    // the waves at t - 1 and t - 2, and the new level t. every block of the task has the same layout
+    const FP* pwcentralt1 = (FP*) STARPU_BLOCK_GET_PTR(descr[RTM_HANDLE_POS_P_T1]);
+    const FP* qwcentralt1 = (FP*) STARPU_BLOCK_GET_PTR(descr[RTM_HANDLE_POS_Q_T1]);
+    const FP* pwcentralt2 = (FP*) STARPU_BLOCK_GET_PTR(descr[RTM_HANDLE_POS_P_T2]);
+    const FP* qwcentralt2 = (FP*) STARPU_BLOCK_GET_PTR(descr[RTM_HANDLE_POS_Q_T2]);
+    FP *const pwwrite = (FP*) STARPU_BLOCK_GET_PTR(descr[RTM_HANDLE_POS_P_T]);
+    FP *const qwwrite = (FP*) STARPU_BLOCK_GET_PTR(descr[RTM_HANDLE_POS_Q_T]);
 
-    const size_t stride_x = 1;
-    const size_t stride_y = STARPU_BLOCK_GET_LDY(descr[0]);
-    const size_t stride_z = STARPU_BLOCK_GET_LDZ(descr[0]);
+    void* center_block = descr[RTM_HANDLE_POS_P_T1];
+    const size_t block_size_x = STARPU_BLOCK_GET_NX(center_block);
+    const size_t block_size_y = STARPU_BLOCK_GET_NY(center_block);
+    const size_t block_size_z = STARPU_BLOCK_GET_NZ(center_block);
+    const size_t ldy = STARPU_BLOCK_GET_LDY(center_block);
+    const size_t ldz = STARPU_BLOCK_GET_LDZ(center_block);
 
+    // unpack the precomputed vlaues which existed as 10 separate handles and
+    // now are used as a tensor
+    void* medium_interface = descr[RTM_HANDLE_POS_MEDIUM];
+    STARPU_ASSERT(STARPU_TENSOR_GET_LDY(medium_interface) == ldy && STARPU_TENSOR_GET_LDZ(medium_interface) == ldz);
+    const FP* medium = (FP*) STARPU_TENSOR_GET_PTR(medium_interface);
+    const size_t medium_ldt = STARPU_TENSOR_GET_LDT(medium_interface);
+    const FP* ch1dxx = medium + MEDIUM_CH1DXX * medium_ldt;
+    const FP* ch1dyy = medium + MEDIUM_CH1DYY * medium_ldt;
+    const FP* ch1dzz = medium + MEDIUM_CH1DZZ * medium_ldt;
+    const FP* ch1dxy = medium + MEDIUM_CH1DXY * medium_ldt;
+    const FP* ch1dyz = medium + MEDIUM_CH1DYZ * medium_ldt;
+    const FP* ch1dxz = medium + MEDIUM_CH1DXZ * medium_ldt;
+    const FP* v2px = medium + MEDIUM_V2PX * medium_ldt;
+    const FP* v2pz = medium + MEDIUM_V2PZ * medium_ldt;
+    const FP* v2sz = medium + MEDIUM_V2SZ * medium_ldt;
+    const FP* v2pn = medium + MEDIUM_V2PN * medium_ldt;
 
-    // precomputed values
-    const FP* ch1dxx = (FP*) STARPU_BLOCK_GET_PTR(descr[0]);
-    const FP* ch1dyy = (FP*) STARPU_BLOCK_GET_PTR(descr[1]);
-    const FP* ch1dzz = (FP*) STARPU_BLOCK_GET_PTR(descr[2]);
-    const FP* ch1dxy = (FP*) STARPU_BLOCK_GET_PTR(descr[3]);
-    const FP* ch1dyz = (FP*) STARPU_BLOCK_GET_PTR(descr[4]);
-    const FP* ch1dxz = (FP*) STARPU_BLOCK_GET_PTR(descr[5]);
-    const FP* v2px = (FP*) STARPU_BLOCK_GET_PTR(descr[6]);
-    const FP* v2pz = (FP*) STARPU_BLOCK_GET_PTR(descr[7]);
-    const FP* v2sz = (FP*) STARPU_BLOCK_GET_PTR(descr[8]);
-    const FP* v2pn = (FP*) STARPU_BLOCK_GET_PTR(descr[9]);
+    // the padded scratch buffer, p at field 0 and q at field 1
+    void* scratch_interface = descr[RTM_HANDLE_POS_SCRATCH];
+    FP *const scratch = (FP*) STARPU_TENSOR_GET_PTR(scratch_interface);
+    const size_t scratch_ldx = 1;
+    const size_t scratch_ldy = STARPU_TENSOR_GET_LDY(scratch_interface);
+    const size_t scratch_ldz = STARPU_TENSOR_GET_LDZ(scratch_interface);
+    const size_t scratch_ldt = STARPU_TENSOR_GET_LDT(scratch_interface);
+    // halo width in each axis, the scratch is the block plus one halo on each side
+    const uvec3_t halo_widths = {
+        (STARPU_TENSOR_GET_NX(scratch_interface) - block_size_x) / 2,
+        (STARPU_TENSOR_GET_NY(scratch_interface) - block_size_y) / 2,
+        (STARPU_TENSOR_GET_NZ(scratch_interface) - block_size_z) / 2,
+    };
 
-    // w at (i, j, k) of t[0]
-    FP *const pwwrite = (FP*) STARPU_BLOCK_GET_PTR(descr[10]);
-    // primary wave
-    // STARPU_R, // r at (i, j, k) of t[1]
-    const FP* pwcentralt1 = (FP*) STARPU_BLOCK_GET_PTR(descr[11]);
-    // // layer when k - 1
-    // // o x o
-    // // x x x 
-    // // o x o
-    // STARPU_R, // r at (i + 0, j + 0, k - 1) of t[1]
-    // STARPU_R, // r at (i + 0, j - 1, k - 1) of t[1]
-    // STARPU_R, // r at (i - 1, j + 0, k - 1) of t[1]
-    // STARPU_R, // r at (i + 1, j + 0, k - 1) of t[1]
-    // STARPU_R, // r at (i + 0, j + 1, k - 1) of t[1]
-    // nomenclatura de variável é:
-    // pw (onda primária do bloco)  ip0 (i + 0)  jp0 (j + 0)  km1 (k - 1), em relação ao central
-    const FP* pwip0jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[12]);
-    const FP* pwip0jm1km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[13]);
-    const FP* pwim1jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[14]);
-    const FP* pwip1jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[15]);
-    const FP* pwip0jp1km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[16]);
+    // 1. gather: the level t - 1 of the block and the slabs it received into the scratch
+#ifndef RELEASE
+    // the halo of the sides without a neighbor is never read, NaN makes any read of it show in the output
+    for(size_t i = 0; i < 2 * scratch_ldt; i++){
+        scratch[i] = NAN;
+    }
+#endif
 
-    // // layer when k
-    // // x x x
-    // // x o x 
-    // // x x x
-    // STARPU_R, // r at (i - 1, j - 1, k + 0) of t[1]
-    // STARPU_R, // r at (i + 0, j - 1, k + 0) of t[1]
-    // STARPU_R, // r at (i + 1, j - 1, k + 0) of t[1]
-    // STARPU_R, // r at (i - 1, j + 0, k + 0) of t[1]
-    // STARPU_R, // r at (i + 1, j + 0, k + 0) of t[1]
-    // STARPU_R, // r at (i - 1, j + 1, k + 0) of t[1]
-    // STARPU_R, // r at (i + 0, j + 1, k + 0) of t[1]
-    // STARPU_R, // r at (i + 1, j + 1, k + 0) of t[1]
-    const FP* pwim1jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[17]);
-    const FP* pwip0jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[18]);
-    const FP* pwip1jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[19]);
-    const FP* pwim1jp0kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[20]);
-    const FP* pwip1jp0kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[21]);
-    const FP* pwim1jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[22]);
-    const FP* pwip0jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[23]);
-    const FP* pwip1jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[24]);
+    // this is the pack section of the code, where it loads the slabs into the
+    // halo and the scratch
+    
+    const copy_region_t whole_block = {
+        .origin = {0, 0, 0},
+        .extent = {block_size_x, block_size_y, block_size_z}};
 
-    // // layer when k + 1
-    // // o x o
-    // // x x x 
-    // // o x o
-    // STARPU_R, // r at (i + 0, j + 0, k + 1) of t[1]
-    // STARPU_R, // r at (i + 0, j - 1, k + 1) of t[1]
-    // STARPU_R, // r at (i - 1, j + 0, k + 1) of t[1]
-    // STARPU_R, // r at (i + 1, j + 0, k + 1) of t[1]
-    // STARPU_R, // r at (i + 0, j + 1, k + 1) of t[1]
-    const FP* pwip0jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[25]);
-    const FP* pwip0jm1kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[26]);
-    const FP* pwim1jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[27]);
-    const FP* pwip1jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[28]);
-    const FP* pwip0jp1kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[29]);
+    // copy the center block into the scratch
 
-    // STARPU_R  // r at (i, j, k) of t[2]
-    const FP* pwcentralt2 = (FP*) STARPU_BLOCK_GET_PTR(descr[30]);
+    // point where the center volume starts
+    const size_t block_in_scratch = idx3(
+        halo_widths.x, halo_widths.y, halo_widths.z, scratch_ldy, scratch_ldz);
 
-    // secondary wave
-    FP *const qwwrite = (FP*) STARPU_BLOCK_GET_PTR(descr[31]);
+    extract_region(pwcentralt1, ldy, ldz, whole_block,
+                   scratch + block_in_scratch, scratch_ldy, scratch_ldz);
 
-    const FP* qwcentralt1 = (FP*) STARPU_BLOCK_GET_PTR(descr[32]);
+    extract_region(qwcentralt1, ldy, ldz, whole_block,
+                   scratch + scratch_ldt + block_in_scratch, scratch_ldy,
+                   scratch_ldz);
 
-    // layer when k - 1
-    const FP* qwip0jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[33]);
-    const FP* qwip0jm1km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[34]);
-    const FP* qwim1jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[35]);
-    const FP* qwip1jp0km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[36]);
-    const FP* qwip0jp1km1 = (FP*) STARPU_BLOCK_GET_PTR(descr[37]);
+    int slab_position = 0;
+    for(int table_index = 0; table_index < NEIGHBOR_COUNT; table_index++){
+        // if i don't have that neighbor, skip
+        if (!(neighbor_mask & NBIT(table_index)))
+          continue;
+        
+        const ivec3_t offset = NEIGHBOR_OFFSETS[table_index];
+        void* slab_interface = descr[rtm_handle_pos_received_slab(slab_position++)];
+        const FP* slab = (FP*) STARPU_TENSOR_GET_PTR(slab_interface);
+        const size_t slab_ldy = STARPU_TENSOR_GET_LDY(slab_interface);
+        const size_t slab_ldz = STARPU_TENSOR_GET_LDZ(slab_interface);
+        const size_t slab_ldt = STARPU_TENSOR_GET_LDT(slab_interface);
+        const copy_region_t whole_slab = {
+            .origin = {0, 0, 0},
+            .extent = {
+                STARPU_TENSOR_GET_NX(slab_interface),
+                STARPU_TENSOR_GET_NY(slab_interface),
+                STARPU_TENSOR_GET_NZ(slab_interface),
+            },
+        };
+        const copy_region_t landing = slab_halo_region(offset);
+        const size_t landing_in_scratch =
+            idx3(landing.origin.x, landing.origin.y, landing.origin.z,
+                 scratch_ldy, scratch_ldz);
+	// copy slab p wave into scratch
+        extract_region(slab, slab_ldy, slab_ldz, whole_slab,
+                       scratch + landing_in_scratch, scratch_ldy, scratch_ldz);
+	// copy slab q wave into scratch
+        extract_region(slab + slab_ldt, slab_ldy, slab_ldz, whole_slab,
+                       scratch + scratch_ldt + landing_in_scratch, scratch_ldy,
+                       scratch_ldz);
+    }
 
-    // layer when k
-    const FP* qwim1jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[38]);
-    const FP* qwip0jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[39]);
-    const FP* qwip1jm1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[40]);
-    const FP* qwim1jp0kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[41]);
-    const FP* qwip1jp0kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[42]);
-    const FP* qwim1jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[43]);
-    const FP* qwip0jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[44]);
-    const FP* qwip1jp1kp0 = (FP*) STARPU_BLOCK_GET_PTR(descr[45]);
+    // 2. stencil on the scratch, writes every point of the level t
+    const FP* p_scratch = scratch;
+    const FP* q_scratch = scratch + scratch_ldt;
 
-    // layer when k + 1
-    const FP* qwip0jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[46]);
-    const FP* qwip0jm1kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[47]);
-    const FP* qwim1jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[48]);
-    const FP* qwip1jp0kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[49]);
-    const FP* qwip0jp1kp1 = (FP*) STARPU_BLOCK_GET_PTR(descr[50]);
-
-    const FP* qwcentralt2 = (FP*) STARPU_BLOCK_GET_PTR(descr[51]);
-
-
-    for(size_t z = 0; z < cube_width_z; z++)
-    for(size_t y = 0; y < cube_width_y; y++)
-    for(size_t x = 0; x < cube_width_x; x++){
-        const size_t idx = cube_idx(x, y, z);
+    for(size_t z = 0; z < block_size_z; z++)
+    for(size_t y = 0; y < block_size_y; y++)
+    for(size_t x = 0; x < block_size_x; x++){
+        const size_t idx = idx3(x, y, z, ldy, ldz);
 
         if(
-            (z < z_start || z >= z_end) || 
-            (y < y_start || y >= y_end) || 
+            (z < z_start || z >= z_end) ||
+            (y < y_start || y >= y_end) ||
             (x < x_start || x >= x_end)
         ){
             pwwrite[idx] = FP_LIT(0.0);
@@ -190,30 +196,17 @@ void rtm_kernel(void *descr[], void *cl_args){
             continue;
         }
 
-        const FP pxx = snd_deriv_dir(pwcentralt1, pwim1jp0kp0, pwip1jp0kp0, x, idx, stride_x, dxxinv, cube_width_x);
-        const FP pyy = snd_deriv_dir(pwcentralt1, pwip0jm1kp0, pwip0jp1kp0, y, idx, stride_y, dyyinv, cube_width_y);
-        const FP pzz = snd_deriv_dir(pwcentralt1, pwip0jp0km1, pwip0jp0kp1, z, idx, stride_z, dzzinv, cube_width_z);
-        const FP pxy = cross_deriv_ddir(
-            pwcentralt1, idx, 
-            x, pwim1jp0kp0, pwip1jp0kp0, stride_x, 
-            y, pwip0jm1kp0, pwip0jp1kp0, stride_y, 
-            pwip1jp1kp0, pwip1jm1kp0, pwim1jp1kp0, pwim1jm1kp0,
-            cube_width_x, dxyinv
-        ); 
-        const FP pyz = cross_deriv_ddir(
-            pwcentralt1, idx, 
-            y, pwip0jm1kp0, pwip0jp1kp0, stride_y, 
-            z, pwip0jp0km1, pwip0jp0kp1, stride_z, 
-            pwip0jp1kp1, pwip0jp1km1, pwip0jm1kp1, pwip0jm1km1,
-            cube_width_y, dyzinv
-        ); 
-        const FP pxz = cross_deriv_ddir(
-            pwcentralt1, idx, 
-            x, pwim1jp0kp0, pwip1jp0kp0, stride_x, 
-            z, pwip0jp0km1, pwip0jp0kp1, stride_z, 
-            pwip1jp0kp1, pwip1jp0km1, pwim1jp0kp1, pwim1jp0km1,
-            cube_width_x, dxzinv
-        ); 
+        const size_t scratch_idx = idx3(x + halo_widths.x, y + halo_widths.y, z + halo_widths.z, scratch_ldy, scratch_ldz);
+        const FP* p_center = p_scratch + scratch_idx;
+        const FP* q_center = q_scratch + scratch_idx;
+
+        // p derivatives, H1(p) and H2(p)
+        const FP pxx = stencil_second_derivative(p_center, scratch_ldx, dxxinv);
+        const FP pyy = stencil_second_derivative(p_center, scratch_ldy, dyyinv);
+        const FP pzz = stencil_second_derivative(p_center, scratch_ldz, dzzinv);
+        const FP pxy = stencil_cross_derivative(p_center, scratch_ldx, scratch_ldy, dxyinv);
+        const FP pyz = stencil_cross_derivative(p_center, scratch_ldy, scratch_ldz, dyzinv);
+        const FP pxz = stencil_cross_derivative(p_center, scratch_ldx, scratch_ldz, dxzinv);
 
         const FP cpxx = ch1dxx[idx] * pxx;
         const FP cpyy = ch1dyy[idx] * pyy;
@@ -225,30 +218,12 @@ void rtm_kernel(void *descr[], void *cl_args){
         const FP h2p = pxx + pyy + pzz - h1p;
 
         // q derivatives, H1(q) and H2(q)
-        const FP qxx = snd_deriv_dir(qwcentralt1, qwim1jp0kp0, qwip1jp0kp0, x, idx, stride_x, dxxinv, cube_width_x);
-        const FP qyy = snd_deriv_dir(qwcentralt1, qwip0jm1kp0, qwip0jp1kp0, y, idx, stride_y, dyyinv, cube_width_y);
-        const FP qzz = snd_deriv_dir(qwcentralt1, qwip0jp0km1, qwip0jp0kp1, z, idx, stride_z, dzzinv, cube_width_z);
-        const FP qxy = cross_deriv_ddir(
-            qwcentralt1, idx, 
-            x, qwim1jp0kp0, qwip1jp0kp0, stride_x, 
-            y, qwip0jm1kp0, qwip0jp1kp0, stride_y, 
-            qwip1jp1kp0, qwip1jm1kp0, qwim1jp1kp0, qwim1jm1kp0,
-            cube_width_x, dxyinv
-        ); 
-        const FP qyz = cross_deriv_ddir(
-            qwcentralt1, idx, 
-            y, qwip0jm1kp0, qwip0jp1kp0, stride_y, 
-            z, qwip0jp0km1, qwip0jp0kp1, stride_z, 
-            qwip0jp1kp1, qwip0jp1km1, qwip0jm1kp1, qwip0jm1km1,
-            cube_width_y, dyzinv
-        ); 
-        const FP qxz = cross_deriv_ddir(
-            qwcentralt1, idx, 
-            x, qwim1jp0kp0, qwip1jp0kp0, stride_x, 
-            z, qwip0jp0km1, qwip0jp0kp1, stride_z, 
-            qwip1jp0kp1, qwip1jp0km1, qwim1jp0kp1, qwim1jp0km1,
-            cube_width_x, dxzinv
-        ); 
+        const FP qxx = stencil_second_derivative(q_center, scratch_ldx, dxxinv);
+        const FP qyy = stencil_second_derivative(q_center, scratch_ldy, dyyinv);
+        const FP qzz = stencil_second_derivative(q_center, scratch_ldz, dzzinv);
+        const FP qxy = stencil_cross_derivative(q_center, scratch_ldx, scratch_ldy, dxyinv);
+        const FP qyz = stencil_cross_derivative(q_center, scratch_ldy, scratch_ldz, dyzinv);
+        const FP qxz = stencil_cross_derivative(q_center, scratch_ldx, scratch_ldz, dxzinv);
 
         const FP cqxx = ch1dxx[idx] * qxx;
         const FP cqyy = ch1dyy[idx] * qyy;
@@ -271,19 +246,24 @@ void rtm_kernel(void *descr[], void *cl_args){
         pwwrite[idx] = FP_LIT(2.0) * pwcentralt1[idx] - pwcentralt2[idx] + rhsp * dt * dt;
         qwwrite[idx] = FP_LIT(2.0) * qwcentralt1[idx] - qwcentralt2[idx] + rhsq * dt * dt;
     }
+
+    // the source is added to the level t before packing, so the neighbors see it
+    if(args->has_source){
+        const size_t source_idx = idx3(args->source_x, args->source_y, args->source_z, ldy, ldz);
+        //print usado no teste sourcediff.sh
+        //printf("%ld: %.9f + %.9f\n", args->t, pwwrite[source_idx], args->source_value);
+        pwwrite[source_idx] += args->source_value;
+        qwwrite[source_idx] += args->source_value;
+    }
+
+    // 3. pack: the borders of the level t into the slabs sent to the neighbors
+    pack_sent_slabs(descr, rtm_handle_pos_sent_slab(neighbor_count, 0), neighbor_mask, pwwrite, qwwrite, ldy, ldz);
 }
 
-void perturbation_kernel(void *descr[], void *cl_args){
-    const perturb_args_t* args = (perturb_args_t*) cl_args;
-
-    const size_t idx = args->source_idx;
-    const FP value = args->perturb_value;
-
-    FP *const p_wave_block = (FP *const) STARPU_BLOCK_GET_PTR(descr[0]);
-    FP *const q_wave_block = (FP *const) STARPU_BLOCK_GET_PTR(descr[1]);
-
-    //print usado no teste sourcediff.sh
-    //printf("%ld: %.9f + %.9f\n", args->t, p_wave_block[idx], value);
-    p_wave_block[idx] += value;
-    q_wave_block[idx] += value;
+void pack_kernel(void *descr[], void *cl_args){
+    const pack_args_t* args = (pack_args_t*) cl_args;
+    void* p_interface = descr[PACK_HANDLE_POS_P];
+    pack_sent_slabs(descr, pack_handle_pos_sent_slab(0), args->neighbor_mask,
+        (FP*) STARPU_BLOCK_GET_PTR(p_interface), (FP*) STARPU_BLOCK_GET_PTR(descr[PACK_HANDLE_POS_Q]),
+        STARPU_BLOCK_GET_LDY(p_interface), STARPU_BLOCK_GET_LDZ(p_interface));
 }

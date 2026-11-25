@@ -35,12 +35,12 @@ void medium_random_velocity_boundary(
 );
 
 // calculates intermediary values for future computations
+// medium[b] holds the MEDIUM_FIELD_COUNT fields of block b one after the other (see enum medium_field),
+// field f at medium[b][f * g.block_size + local_idx(x, y, z)]
 void medium_calc_intermediary_values(
     const FP* vpz, const FP* vsv, const FP* epsilon,
     const FP* delta, const FP* phi, const FP* theta,
-    FP **restrict ch1dxx, FP **restrict ch1dyy, FP **restrict ch1dzz, 
-    FP **restrict ch1dxy, FP **restrict ch1dyz, FP **restrict ch1dxz, 
-    FP **restrict v2px, FP **restrict v2pz, FP **restrict v2sz, FP **restrict v2pn
+    FP **restrict medium
 );
 
 

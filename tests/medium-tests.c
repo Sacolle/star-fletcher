@@ -7,7 +7,9 @@
 #include <float.h>
 
 #include "medium.h"
-#include "macros.h"
+#include "kernel.h"
+#include "global.h"
+#include "indexing.h"
 
 #define ind(ix,iy,iz) (((iz) * sy + (iy)) * sx + (ix))
 // functions extracted from [fletcher-base](https://github.com/gabrielfrtg/fletcher-base/tree/main)
@@ -256,13 +258,11 @@ TestSuite(medium, .init = setup_seed);
 #define EPSILON FLT_EPSILON
 
 
-size_t g_volume_width;
-size_t g_cube_width;
-size_t g_width_in_cubes;
+struct global_data g;
 
 Test(medium, proper_initialization){
 
-    g_volume_width = 10;
+    g.volume_dims = (uvec3_t){10, 10, 10};
     const int sx = 10;
     const int sy = 10;
     const int sz = 10;
@@ -315,7 +315,7 @@ Test(medium, correct_absorb){
     const int sy = ny + 2 * bord + 2 * absorb;
     const int sz = nz + 2 * bord + 2 * absorb;
 
-    g_volume_width = sx;
+    g.volume_dims = (uvec3_t){sx, sy, sz};
     const int size = sx * sy * sz;
 
     FP vpz_base[size];
@@ -361,8 +361,9 @@ Test(medium, correct_absorb){
 Test(medium, correct_intermediary_values){
     const size_t seg = 3;
     const size_t c_size = 10;
-    g_width_in_cubes = seg;
-    g_cube_width = c_size;
+    g.num_blocks = (uvec3_t){seg, seg, seg};
+    g.block_sizes = (uvec3_t){c_size, c_size, c_size};
+    g.block_size = c_size * c_size * c_size;
 
     const int bord = 4;
     const int absorb = 4;
@@ -373,7 +374,7 @@ Test(medium, correct_intermediary_values){
     const int sy = ny + 2 * bord + 2 * absorb;
     const int sz = nz + 2 * bord + 2 * absorb;
 
-    g_volume_width = sx;
+    g.volume_dims = (uvec3_t){sx, sy, sz};
     const int size = sx * sy * sz;
 
     FP vpz_base[size];
@@ -438,35 +439,11 @@ Test(medium, correct_intermediary_values){
 
 
 
-    FP* ch1dxx_myimpl[total_seg];
-    FP* ch1dyy_myimpl[total_seg];
-    FP* ch1dzz_myimpl[total_seg];
-    FP* ch1dxy_myimpl[total_seg];
-    FP* ch1dyz_myimpl[total_seg];
-    FP* ch1dxz_myimpl[total_seg];
-    FP* v2px_myimpl[total_seg];
-    FP* v2pz_myimpl[total_seg];
-    FP* v2sz_myimpl[total_seg];
-    FP* v2pn_myimpl[total_seg];
-
-    FP** buffs[10] = {
-        ch1dxx_myimpl,
-        ch1dyy_myimpl,
-        ch1dzz_myimpl,
-        ch1dxy_myimpl,
-        ch1dyz_myimpl,
-        ch1dxz_myimpl,
-        v2px_myimpl,
-        v2pz_myimpl,
-        v2sz_myimpl,
-        v2pn_myimpl
-    };
-
-    for(int i = 0; i < 10; i++){
-        for(int seg = 0; seg < total_seg; seg++){
-            if((buffs[i][seg] = (FP*) malloc(sizeof(FP) * total_c_size)) == NULL){
-                cr_assert(false);
-            }
+    // one buffer per block with the MEDIUM_FIELD_COUNT fields one after the other
+    FP* medium_myimpl[total_seg];
+    for(int seg = 0; seg < total_seg; seg++){
+        if((medium_myimpl[seg] = (FP*) malloc(sizeof(FP) * MEDIUM_FIELD_COUNT * total_c_size)) == NULL){
+            cr_assert(false);
         }
     }
 
@@ -478,51 +455,49 @@ Test(medium, correct_intermediary_values){
 
     medium_calc_intermediary_values(
         vpz_myimpl, vsv_myimpl, epsilon_myimpl, delta_myimpl, phi_myimpl, theta_myimpl,
-        (FP**) ch1dxx_myimpl, (FP**) ch1dyy_myimpl, (FP**) ch1dzz_myimpl,
-        (FP**) ch1dxy_myimpl, (FP**) ch1dyz_myimpl, (FP**) ch1dxz_myimpl, 
-        (FP**) v2px_myimpl, (FP**) v2pz_myimpl, (FP**) v2sz_myimpl, (FP**) v2pn_myimpl
+        medium_myimpl
     );
 
-    for(size_t k = 0; k < g_width_in_cubes; k++){
-        for(size_t j = 0; j < g_width_in_cubes; j++){
-            for(size_t i = 0; i < g_width_in_cubes; i++){
+    for(size_t k = 0; k < g.num_blocks.z; k++){
+        for(size_t j = 0; j < g.num_blocks.y; j++){
+            for(size_t i = 0; i < g.num_blocks.x; i++){
                 //index the block
                 const size_t b_i = block_idx(i, j , k);
 
-                for(size_t z = 0; z < g_cube_width; z++){
-                    for(size_t y = 0; y < g_cube_width; y++){
-                        for(size_t x = 0; x < g_cube_width; x++){
-                            const size_t c_i = cube_idx(x, y, z);
-                            const size_t vol_i = volume_idx(x + i * g_cube_width, y + j * g_cube_width, z + k * g_cube_width);
+                for(size_t z = 0; z < g.block_sizes.z; z++){
+                    for(size_t y = 0; y < g.block_sizes.y; y++){
+                        for(size_t x = 0; x < g.block_sizes.x; x++){
+                            const size_t c_i = local_idx(x, y, z);
+                            const size_t vol_i = local_to_volume_idx(x, y, z, i, j, k);
 
-                            cr_expect(epsilon_eq(flt, ch1dxx_base[vol_i], ch1dxx_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, ch1dxx_base[vol_i], medium_myimpl[b_i][MEDIUM_CH1DXX * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
 
-                            cr_expect(epsilon_eq(flt, ch1dyy_base[vol_i], ch1dyy_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, ch1dyy_base[vol_i], medium_myimpl[b_i][MEDIUM_CH1DYY * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
 
-                            cr_expect(epsilon_eq(flt, ch1dzz_base[vol_i], ch1dzz_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, ch1dzz_base[vol_i], medium_myimpl[b_i][MEDIUM_CH1DZZ * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
 
-                            cr_expect(epsilon_eq(flt, ch1dxy_base[vol_i], ch1dxy_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, ch1dxy_base[vol_i], medium_myimpl[b_i][MEDIUM_CH1DXY * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
 
-                            cr_expect(epsilon_eq(flt, ch1dyz_base[vol_i], ch1dyz_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, ch1dyz_base[vol_i], medium_myimpl[b_i][MEDIUM_CH1DYZ * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
 
-                            cr_expect(epsilon_eq(flt, ch1dxz_base[vol_i], ch1dxz_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, ch1dxz_base[vol_i], medium_myimpl[b_i][MEDIUM_CH1DXZ * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
 
-                            cr_expect(epsilon_eq(flt, v2px_base[vol_i], v2px_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, v2px_base[vol_i], medium_myimpl[b_i][MEDIUM_V2PX * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
 
-                            cr_expect(epsilon_eq(flt, v2pz_base[vol_i], v2pz_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, v2pz_base[vol_i], medium_myimpl[b_i][MEDIUM_V2PZ * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
 
-                            cr_expect(epsilon_eq(flt, v2sz_base[vol_i], v2sz_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, v2sz_base[vol_i], medium_myimpl[b_i][MEDIUM_V2SZ * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
 
-                            cr_expect(epsilon_eq(flt, v2pn_base[vol_i], v2pn_myimpl[b_i][c_i], EPSILON), 
+                            cr_expect(epsilon_eq(flt, v2pn_base[vol_i], medium_myimpl[b_i][MEDIUM_V2PN * total_c_size + c_i], EPSILON), 
                                 "vpz at b(%d, %d, %d), c(%d, %d, %d)",i, j, k, x, y, z);
                         }
                     }
@@ -531,10 +506,8 @@ Test(medium, correct_intermediary_values){
         }
     }
 
-    for(int i = 0; i < 10; i++){
-        for(int seg = 0; seg < total_seg; seg++){
-            free(buffs[i][seg]);
-        }
+    for(int seg = 0; seg < total_seg; seg++){
+        free(medium_myimpl[seg]);
     }
     free(ch1dxx_base);
     free(ch1dyy_base);
@@ -551,8 +524,9 @@ Test(medium, correct_intermediary_values){
 Test(medium, kernel_proper_computation){
     const size_t seg = 3;
     const size_t c_size = 10;
-    g_width_in_cubes = seg;
-    g_cube_width = c_size;
+    g.num_blocks = (uvec3_t){seg, seg, seg};
+    g.block_sizes = (uvec3_t){c_size, c_size, c_size};
+    g.block_size = c_size * c_size * c_size;
 
     const int bord = 4;
     const int absorb = 4;
@@ -563,7 +537,7 @@ Test(medium, kernel_proper_computation){
     const int sy = ny + 2 * bord + 2 * absorb;
     const int sz = nz + 2 * bord + 2 * absorb;
 
-    g_volume_width = sx;
+    g.volume_dims = (uvec3_t){sx, sy, sz};
     const int size = sx * sy * sz;
 
     FP vpz[size];
@@ -580,37 +554,18 @@ Test(medium, kernel_proper_computation){
     const size_t total_seg = seg * seg * seg;
     const size_t total_c_size = c_size * c_size * c_size;
 
-    FP* ch1dxx[total_seg];
-    FP* ch1dyy[total_seg];
-    FP* ch1dzz[total_seg];
-    FP* ch1dxy[total_seg];
-    FP* ch1dyz[total_seg];
-    FP* ch1dxz[total_seg];
-    FP* v2px[total_seg];
-    FP* v2pz[total_seg];
-    FP* v2sz[total_seg];
-    FP* v2pn[total_seg];
-
-    FP** buffs[10] = { ch1dxx, ch1dyy, ch1dzz, ch1dxy, ch1dyz, ch1dxz, v2px, v2pz, v2sz, v2pn };
-
-    for(int i = 0; i < 10; i++){
-        for(int seg = 0; seg < total_seg; seg++){
-            if((buffs[i][seg] = (FP*) malloc(sizeof(FP) * total_c_size)) == NULL){
-                cr_assert(false);
-            }
+    FP* medium[total_seg];
+    for(int seg = 0; seg < total_seg; seg++){
+        if((medium[seg] = (FP*) malloc(sizeof(FP) * MEDIUM_FIELD_COUNT * total_c_size)) == NULL){
+            cr_assert(false);
         }
     }
 
-    medium_calc_intermediary_values(
-        vpz, vsv, epsilon, delta, phi, theta,
-        (FP**) ch1dxx, (FP**) ch1dyy, (FP**) ch1dzz,
-        (FP**) ch1dxy, (FP**) ch1dyz, (FP**) ch1dxz, 
-        (FP**) v2px, (FP**) v2pz, (FP**) v2sz, (FP**) v2pn
-    );
+    medium_calc_intermediary_values(vpz, vsv, epsilon, delta, phi, theta, medium);
 
-    for(size_t k = 0; k < g_width_in_cubes; k++){
-        for(size_t j = 0; j < g_width_in_cubes; j++){
-            for(size_t i = 0; i < g_width_in_cubes; i++){
+    for(size_t k = 0; k < g.num_blocks.z; k++){
+        for(size_t j = 0; j < g.num_blocks.y; j++){
+            for(size_t i = 0; i < g.num_blocks.x; i++){
                 //index the block
                 const size_t b_i = block_idx(i, j, k);
 
@@ -618,10 +573,8 @@ Test(medium, kernel_proper_computation){
         }
     }
 
-    for(int i = 0; i < 10; i++){
-        for(int seg = 0; seg < total_seg; seg++){
-            free(buffs[i][seg]);
-        }
+    for(int seg = 0; seg < total_seg; seg++){
+        free(medium[seg]);
     }
 }
 
@@ -637,7 +590,7 @@ Test(medium, source_value){
 
 
 Test(medium, stability_condition){
-    g_volume_width = 10;
+    g.volume_dims = (uvec3_t){10, 10, 10};
     const float dx = 12.5, dy = 12.5, dz = 12.5;
     const int sx = 10;
     const int sy = 10;

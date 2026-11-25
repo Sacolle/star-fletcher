@@ -77,6 +77,19 @@ err_t size_t_get_envvar(size_t* out, const char* key){
     return 0;
 }
 
+err_t u32_get_envvar(uint32_t* out, const char* key){
+    size_t value;
+    err_t err = size_t_get_envvar(&value, key);
+    if(err != 0){
+        return err;
+    }
+    if(value > UINT32_MAX){
+        return ME_OVERFLOW_CONVERT;
+    }
+    *out = (uint32_t) value;
+    return 0;
+}
+
 err_t str_get_envvar(char** out, const char* key){
     char* env_out = getenv(key);
     if(env_out == NULL){

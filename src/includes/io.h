@@ -17,9 +17,11 @@ err_t io_state_init(
     const size_t max_iteration_count, const size_t volume_size
 );
 
+// writes the block of size nx * ny * nz (strides ldy, ldz) whose first point is the point
+// (origin_x, origin_y, origin_z) of the volume, into the output moment t
 void io_state_write_file(
-    const size_t i, const size_t j, const size_t k, const size_t t, 
-    const size_t nx, const size_t ny, const size_t nz, const FP* block
+    const size_t origin_x, const size_t origin_y, const size_t origin_z, const size_t t,
+    const size_t nx, const size_t ny, const size_t nz, const size_t ldy, const size_t ldz, const FP* block
 );
 
 err_t io_state_finish();

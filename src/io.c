@@ -12,7 +12,8 @@
 #include <string.h>
 #include <stdbool.h>
 
-#include "macros.h"
+#include "global.h"
+#include "indexing.h"
 
 struct io_state {
     // uint32_t mem_align;
@@ -89,24 +90,21 @@ err_t io_state_init(
 }
 #include <stdio.h>
 
-extern size_t g_volume_width;
 
 void io_state_write_file(
-    const size_t i, const size_t j, const size_t k, const size_t t, 
-    const size_t nx, const size_t ny, const size_t nz, const FP* block
+    const size_t origin_x, const size_t origin_y, const size_t origin_z, const size_t t,
+    const size_t nx, const size_t ny, const size_t nz, const size_t ldy, const size_t ldz, const FP* block
 ){
     io_state_t* state = get_io_state();
     FP* buff = state->buff;
-    const size_t total_volume_size = CUBE(g_volume_width);
+    const size_t total_volume_size = uvec3_prod(g.volume_dims);
 
-    for(size_t x = 0; x < nx; x++)
+    for(size_t z = 0; z < nz; z++)
     for(size_t y = 0; y < ny; y++)
-    for(size_t z = 0; z < nz; z++){
-        // get the absolute index for the point (x, y, z) of cube (i, j, k) in the total volue
-        // then offset it by which iteration we are writing to.
-        const size_t buff_idx = block_cube_to_volume_idx(x, y, z, i, j, k) + total_volume_size * t;
-        //printf("%ld\n", buff_idx);
-        buff[buff_idx] = block[cube_idx(x, y, z)];
+    for(size_t x = 0; x < nx; x++){
+        // the point (x, y, z) of the block in the whole volume, offset by which moment we are writing to
+        const size_t buff_idx = volume_idx(origin_x + x, origin_y + y, origin_z + z) + total_volume_size * t;
+        buff[buff_idx] = block[idx3(x, y, z, ldy, ldz)];
     }
 }
 

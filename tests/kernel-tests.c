@@ -3,8 +3,10 @@
 #include <criterion/new/assert.h>
 #include <criterion/logging.h>
 
-#include "macros.h"
-#include "derivatives.h"
+#include "global.h"
+#include "indexing.h"
+#include "halo.h"
+#include "stencil.h"
 #include "medium.h"
 #include "mem.h"
 #include "kernel.h"
@@ -43,6 +45,8 @@
 #define SEED 42
 
 #define EPSILON FLT_EPSILON
+// the block kernel and the fletcher-base implementation run the same operations in the same order
+#define KERNEL_EPSILON 1e-6
 #define FP_CRIT flt
 
 #define BORDER_WIDTH 4
@@ -53,9 +57,7 @@ void setup_seed(void){
     srand(SEED);
 }
 
-size_t g_volume_width;
-size_t g_cube_width;
-size_t g_width_in_cubes;
+struct global_data g;
 
 const size_t absorb_width = 4;
 
@@ -66,7 +68,9 @@ FP* g_volume_matrix_qc;
 FP** g_segment_matrix_p[3];
 FP** g_segment_matrix_q[3];
 
-FP **g_ch1dxx, **g_ch1dyy, **g_ch1dzz, **g_ch1dxy, **g_ch1dyz, **g_ch1dxz, **g_v2px, **g_v2pz, **g_v2sz, **g_v2pn;
+// one buffer per block with the MEDIUM_FIELD_COUNT fields one after the other
+FP **g_medium;
+#define MEDIUM_AT(field, block, point) (g_medium[block][(field) * g.block_size + (point)])
 
 mem_vec_t allocs = NULL;
 
@@ -76,8 +80,8 @@ void base_computation_implementation(
     float* pc, float* pp, float* qc, float* qp
 ){
     const int strideX = 1;
-    const int strideY = g_volume_width;
-    const int strideZ = g_volume_width * g_volume_width;
+    const int strideY = g.volume_dims.x;
+    const int strideZ = g.volume_dims.x * g.volume_dims.x;
 
     const float dxxinv=1.0f/(dx*dx);
     const float dyyinv=1.0f/(dy*dy);
@@ -95,12 +99,12 @@ void base_computation_implementation(
     const float pyz= DerCross(pc, i, strideY, strideZ, dyzinv);
     const float pxz= DerCross(pc, i, strideX, strideZ, dxzinv);
 
-    const float cpxx=g_ch1dxx[med_i][med_j]*pxx;
-    const float cpyy=g_ch1dyy[med_i][med_j]*pyy;
-    const float cpzz=g_ch1dzz[med_i][med_j]*pzz;
-    const float cpxy=g_ch1dxy[med_i][med_j]*pxy;
-    const float cpxz=g_ch1dxz[med_i][med_j]*pxz;
-    const float cpyz=g_ch1dyz[med_i][med_j]*pyz;
+    const float cpxx=MEDIUM_AT(MEDIUM_CH1DXX, med_i, med_j)*pxx;
+    const float cpyy=MEDIUM_AT(MEDIUM_CH1DYY, med_i, med_j)*pyy;
+    const float cpzz=MEDIUM_AT(MEDIUM_CH1DZZ, med_i, med_j)*pzz;
+    const float cpxy=MEDIUM_AT(MEDIUM_CH1DXY, med_i, med_j)*pxy;
+    const float cpxz=MEDIUM_AT(MEDIUM_CH1DXZ, med_i, med_j)*pxz;
+    const float cpyz=MEDIUM_AT(MEDIUM_CH1DYZ, med_i, med_j)*pyz;
     const float h1p=cpxx+cpyy+cpzz+cpxy+cpxz+cpyz;
     const float h2p=pxx+pyy+pzz-h1p;
 
@@ -113,12 +117,12 @@ void base_computation_implementation(
     const float qyz= DerCross(qc, i, strideY,  strideZ, dyzinv);
     const float qxz= DerCross(qc, i, strideX,  strideZ, dxzinv);
 
-    const float cqxx=g_ch1dxx[med_i][med_j]*qxx;
-    const float cqyy=g_ch1dyy[med_i][med_j]*qyy;
-    const float cqzz=g_ch1dzz[med_i][med_j]*qzz;
-    const float cqxy=g_ch1dxy[med_i][med_j]*qxy;
-    const float cqxz=g_ch1dxz[med_i][med_j]*qxz;
-    const float cqyz=g_ch1dyz[med_i][med_j]*qyz;
+    const float cqxx=MEDIUM_AT(MEDIUM_CH1DXX, med_i, med_j)*qxx;
+    const float cqyy=MEDIUM_AT(MEDIUM_CH1DYY, med_i, med_j)*qyy;
+    const float cqzz=MEDIUM_AT(MEDIUM_CH1DZZ, med_i, med_j)*qzz;
+    const float cqxy=MEDIUM_AT(MEDIUM_CH1DXY, med_i, med_j)*qxy;
+    const float cqxz=MEDIUM_AT(MEDIUM_CH1DXZ, med_i, med_j)*qxz;
+    const float cqyz=MEDIUM_AT(MEDIUM_CH1DYZ, med_i, med_j)*qyz;
     const float h1q=cqxx+cqyy+cqzz+cqxy+cqxz+cqyz;
     const float h2q=qxx+qyy+qzz-h1q;
 
@@ -129,8 +133,8 @@ void base_computation_implementation(
 
     // rhs of p and q equations
 
-    const float rhsp=g_v2px[med_i][med_j]*h2p + g_v2pz[med_i][med_j]*h1q + g_v2sz[med_i][med_j]*h1pmq;
-    const float rhsq=g_v2pn[med_i][med_j]*h2p + g_v2pz[med_i][med_j]*h1q - g_v2sz[med_i][med_j]*h2pmq;
+    const float rhsp=MEDIUM_AT(MEDIUM_V2PX, med_i, med_j)*h2p + MEDIUM_AT(MEDIUM_V2PZ, med_i, med_j)*h1q + MEDIUM_AT(MEDIUM_V2SZ, med_i, med_j)*h1pmq;
+    const float rhsq=MEDIUM_AT(MEDIUM_V2PN, med_i, med_j)*h2p + MEDIUM_AT(MEDIUM_V2PZ, med_i, med_j)*h1q - MEDIUM_AT(MEDIUM_V2SZ, med_i, med_j)*h2pmq;
 
     // new p and q
 
@@ -142,17 +146,20 @@ void build_matricies(){
     setup_seed();
 
     // use 3 because it simplifies
-    g_width_in_cubes = 3;
-    
+    g.num_blocks = (uvec3_t){3, 3, 3};
+
     //can change to see the effect of diferent values
-    g_cube_width = 16;
-    g_volume_width = g_cube_width * g_width_in_cubes;
+    g.block_sizes = (uvec3_t){16, 16, 16};
+    g.volume_dims = (uvec3_t){16 * 3, 16 * 3, 16 * 3};
+    g.block_size = uvec3_prod(g.block_sizes);
+    g.total_blocks = uvec3_prod(g.num_blocks);
+    TRY(halo_init(g.num_blocks, g.block_sizes, &g.halo_widths));
 
     const enum Form form = TTI;
     
     mem_vec_t medium_allocs = NULL;
     FP *vpz, *vsv, *epsilon, *delta, *phi, *theta;
-    const size_t medium_size = sizeof(FP) * CUBE(g_volume_width);
+    const size_t medium_size = sizeof(FP) * uvec3_prod(g.volume_dims);
 
     TRY(mem_allocate_local(&medium_allocs, (void**) &vpz, medium_size));
     TRY(mem_allocate_local(&medium_allocs, (void**) &vsv, medium_size));
@@ -162,68 +169,60 @@ void build_matricies(){
     TRY(mem_allocate_local(&medium_allocs, (void**) &theta, medium_size));
 
     // inicialize the buffers above based on the type of medium
-    medium_initialize(form, CUBE(g_volume_width), vpz, vsv, epsilon, delta, phi, theta);
+    medium_initialize(form, uvec3_prod(g.volume_dims), vpz, vsv, epsilon, delta, phi, theta);
     
     // set the absorption zone for vpz and vsv
     medium_random_velocity_boundary(BORDER_WIDTH, absorb_width, vpz, vsv);
 
-    #define ALLOCATE_NESTED_BUFFER(v, cubes, sizes) \
-        TRY(mem_allocate_local(&allocs, (void**) &v, CUBE(cubes) * sizeof(FP*))); \
-        for(size_t i = 0; i < CUBE(cubes); i++) \
-            TRY(mem_allocate_local(&allocs, (void**)(v + i), CUBE(sizes) * sizeof(FP)));
+    // buffer_count buffers of buffer_size points each
+    #define ALLOCATE_NESTED_BUFFER(v, buffer_count, buffer_size) \
+        TRY(mem_allocate_local(&allocs, (void**) &v, (buffer_count) * sizeof(FP*))); \
+        for(size_t i = 0; i < (buffer_count); i++) \
+            TRY(mem_allocate_local(&allocs, (void**)(v + i), (buffer_size) * sizeof(FP)));
 
-    ALLOCATE_NESTED_BUFFER(g_ch1dxx, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dyy, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dzz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dxy, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dyz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_ch1dxz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_v2px, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_v2pz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_v2sz, g_width_in_cubes, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_v2pn, g_width_in_cubes, g_cube_width);
+    TRY(mem_allocate_local(&allocs, (void**) &g_medium, g.total_blocks * sizeof(FP*)));
+    for(size_t i = 0; i < g.total_blocks; i++)
+        TRY(mem_allocate_local(&allocs, (void**)(g_medium + i), MEDIUM_FIELD_COUNT * g.block_size * sizeof(FP)));
 
-    medium_calc_intermediary_values(
-        vpz, vsv, epsilon, delta, phi, theta,
-        g_ch1dxx,g_ch1dyy,g_ch1dzz,g_ch1dxy,g_ch1dyz,g_ch1dxz,g_v2px,g_v2pz,g_v2sz,g_v2pn
-    );
+    medium_calc_intermediary_values(vpz, vsv, epsilon, delta, phi, theta, g_medium);
 
     //at this point the values for the medium will not be used again
     mem_free_local(&medium_allocs);
 
-    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_pp, CUBE(g_volume_width) * sizeof(FP))); 
-    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_pc, CUBE(g_volume_width) * sizeof(FP))); 
-    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_qp, CUBE(g_volume_width) * sizeof(FP))); 
-    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_qc, CUBE(g_volume_width) * sizeof(FP))); 
+    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_pp, uvec3_prod(g.volume_dims) * sizeof(FP))); 
+    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_pc, uvec3_prod(g.volume_dims) * sizeof(FP))); 
+    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_qp, uvec3_prod(g.volume_dims) * sizeof(FP))); 
+    TRY(mem_allocate_local(&allocs, (void**) &g_volume_matrix_qc, uvec3_prod(g.volume_dims) * sizeof(FP))); 
 
     //TODO: size is diferent due to border
     // I do not acess the inner values of the border ones:
     // so they do not need to be initialized, but i need to be able to acess them
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[0], g_width_in_cubes + 2, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[1], g_width_in_cubes + 2, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[2], g_width_in_cubes + 2, g_cube_width);
+    const size_t padded_block_count = (g.num_blocks.x + 2) * (g.num_blocks.y + 2) * (g.num_blocks.z + 2);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[0], padded_block_count, g.block_size);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[1], padded_block_count, g.block_size);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_p[2], padded_block_count, g.block_size);
 
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[0], g_width_in_cubes + 2, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[1], g_width_in_cubes + 2, g_cube_width);
-    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[2], g_width_in_cubes + 2, g_cube_width);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[0], padded_block_count, g.block_size);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[1], padded_block_count, g.block_size);
+    ALLOCATE_NESTED_BUFFER(g_segment_matrix_q[2], padded_block_count, g.block_size);
 
-    for(size_t k = 0; k < g_width_in_cubes; k++)
-    for(size_t j = 0; j < g_width_in_cubes; j++)
-    for(size_t i = 0; i < g_width_in_cubes; i++){
-        for(size_t z = 0; z < g_cube_width; z++)
-        for(size_t y = 0; y < g_cube_width; y++)
-        for(size_t x = 0; x < g_cube_width; x++){
+    for(size_t k = 0; k < g.num_blocks.x; k++)
+    for(size_t j = 0; j < g.num_blocks.x; j++)
+    for(size_t i = 0; i < g.num_blocks.x; i++){
+        for(size_t z = 0; z < g.block_sizes.x; z++)
+        for(size_t y = 0; y < g.block_sizes.x; y++)
+        for(size_t x = 0; x < g.block_sizes.x; x++){
             const FP rand_val = FP_RAND();
             for(size_t d = 0; d < 3; d++){
-                g_segment_matrix_p[d][block_idx(i, j, k)][cube_idx(x, y, z)] = 0.0f;
-                g_segment_matrix_q[d][block_idx(i, j, k)][cube_idx(x, y, z)] = 0.0f;
+                g_segment_matrix_p[d][block_idx(i, j, k)][local_idx(x, y, z)] = 0.0f;
+                g_segment_matrix_q[d][block_idx(i, j, k)][local_idx(x, y, z)] = 0.0f;
             }
 
-            g_volume_matrix_pp[block_cube_to_volume_idx(x, y, z, i, j, k)] = 0.0f;
-            g_volume_matrix_pc[block_cube_to_volume_idx(x, y, z, i, j, k)] = 0.0f;
+            g_volume_matrix_pp[local_to_volume_idx(x, y, z, i, j, k)] = 0.0f;
+            g_volume_matrix_pc[local_to_volume_idx(x, y, z, i, j, k)] = 0.0f;
 
-            g_volume_matrix_qp[block_cube_to_volume_idx(x, y, z, i, j, k)] = 0.0f;
-            g_volume_matrix_qc[block_cube_to_volume_idx(x, y, z, i, j, k)] = 0.0f;
+            g_volume_matrix_qp[local_to_volume_idx(x, y, z, i, j, k)] = 0.0f;
+            g_volume_matrix_qc[local_to_volume_idx(x, y, z, i, j, k)] = 0.0f;
         }
     }
 
@@ -242,251 +241,211 @@ void teardown_values(){
 TestSuite(fletcher_kernel, .init = build_matricies, .fini = teardown_values);
 
 #define ASBLK(_ptr) ((struct starpu_block_interface) { \
-    .id = STARPU_BLOCK_INTERFACE_ID, .ptr = (uintptr_t) _ptr, \
-    .nx = g_cube_width, .ny = g_cube_width, .nz = g_cube_width, \
-    .ldy = g_cube_width, .ldz = g_cube_width * g_cube_width, .elemsize = sizeof(FP)})
+    .id = STARPU_BLOCK_INTERFACE_ID, .ptr = (uintptr_t) (_ptr), \
+    .nx = g.block_sizes.x, .ny = g.block_sizes.y, .nz = g.block_sizes.z, \
+    .ldy = g.block_sizes.x, .ldz = g.block_sizes.x * g.block_sizes.y, .elemsize = sizeof(FP)})
 
-void build_handles(struct starpu_block_interface handles[52], size_t i, size_t j, size_t k){
-    const size_t idx = block_idx(i, j, k);
+// a contiguous nx * ny * nz * nt tensor
+#define ASTENSOR(_ptr, _nx, _ny, _nz, _nt) ((struct starpu_tensor_interface) { \
+    .id = STARPU_TENSOR_INTERFACE_ID, .ptr = (uintptr_t) (_ptr), \
+    .nx = (_nx), .ny = (_ny), .nz = (_nz), .nt = (_nt), \
+    .ldy = (_nx), .ldz = (_nx) * (_ny), .ldt = (_nx) * (_ny) * (_nz), .elemsize = sizeof(FP)})
 
-    const size_t precomp_idx = block_idx(i - 1, j - 1, k - 1);
-    handles[0] = ASBLK(g_ch1dxx[precomp_idx]);
-    handles[1] = ASBLK(g_ch1dyy[precomp_idx]);
-    handles[2] = ASBLK(g_ch1dzz[precomp_idx]);
-    handles[3] = ASBLK(g_ch1dxy[precomp_idx]);
-    handles[4] = ASBLK(g_ch1dyz[precomp_idx]);
-    handles[5] = ASBLK(g_ch1dxz[precomp_idx]);
-    handles[6] = ASBLK(g_v2px[precomp_idx]);
-    handles[7] = ASBLK(g_v2pz[precomp_idx]);
-    handles[8] = ASBLK(g_v2sz[precomp_idx]);
-    handles[9] = ASBLK(g_v2pn[precomp_idx]);
-
-    // p wave blocks
-    handles[10] = ASBLK(g_segment_matrix_p[0][idx]); // write block
-
-    handles[11] = ASBLK(g_segment_matrix_p[1][idx]); //central block when t - 1
-
-    handles[12] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 0, k - 1)]);
-    handles[13] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j - 1, k - 1)]);
-    handles[14] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j + 0, k - 1)]);
-    handles[15] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j + 0, k - 1)]);
-    handles[16] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 1, k - 1)]);
-
-    handles[17] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j - 1, k + 0)]);
-    handles[18] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j - 1, k + 0)]);
-    handles[19] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j - 1, k + 0)]);
-    handles[20] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j + 0, k + 0)]);
-    handles[21] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j + 0, k + 0)]);
-    handles[22] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j + 1, k + 0)]);
-    handles[23] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 1, k + 0)]);
-    handles[24] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j + 1, k + 0)]);
-
-    handles[25] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 0, k + 1)]);
-    handles[26] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j - 1, k + 1)]);
-    handles[27] = ASBLK(g_segment_matrix_p[1][block_idx(i - 1, j + 0, k + 1)]);
-    handles[28] = ASBLK(g_segment_matrix_p[1][block_idx(i + 1, j + 0, k + 1)]);
-    handles[29] = ASBLK(g_segment_matrix_p[1][block_idx(i + 0, j + 1, k + 1)]);
-
-    handles[30] = ASBLK(g_segment_matrix_p[2][idx]); //central block when t - 2
-
-    // q wave blocks
-    handles[31] = ASBLK(g_segment_matrix_q[0][idx]); // write block
-
-    handles[32] = ASBLK(g_segment_matrix_q[1][idx]); //central block when t - 1
-
-    handles[33] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 0, k - 1)]);
-    handles[34] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j - 1, k - 1)]);
-    handles[35] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j + 0, k - 1)]);
-    handles[36] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j + 0, k - 1)]);
-    handles[37] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 1, k - 1)]);
-
-    handles[38] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j - 1, k + 0)]);
-    handles[39] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j - 1, k + 0)]);
-    handles[40] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j - 1, k + 0)]);
-    handles[41] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j + 0, k + 0)]);
-    handles[42] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j + 0, k + 0)]);
-    handles[43] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j + 1, k + 0)]);
-    handles[44] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 1, k + 0)]);
-    handles[45] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j + 1, k + 0)]);
-
-    handles[46] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 0, k + 1)]);
-    handles[47] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j - 1, k + 1)]);
-    handles[48] = ASBLK(g_segment_matrix_q[1][block_idx(i - 1, j + 0, k + 1)]);
-    handles[49] = ASBLK(g_segment_matrix_q[1][block_idx(i + 1, j + 0, k + 1)]);
-    handles[50] = ASBLK(g_segment_matrix_q[1][block_idx(i + 0, j + 1, k + 1)]);
-
-    handles[51] = ASBLK(g_segment_matrix_q[2][idx]); //central block when t - 2
+// copies the block (i, j, k) of a volume array into a contiguous block buffer
+static void extract_block(const FP* volume, size_t i, size_t j, size_t k, FP* block){
+    const copy_region_t region = {
+        .origin = {i * g.block_sizes.x, j * g.block_sizes.y, k * g.block_sizes.z},
+        .extent = g.block_sizes,
+    };
+    extract_region(volume, g.volume_dims.x, g.volume_dims.x * g.volume_dims.y, region,
+        block, g.block_sizes.x, g.block_sizes.x * g.block_sizes.y);
 }
-// the kernel requires a `struct starpu_block_interface*`, então salva os blocos localemente 
-// e gera um vetor "virtual" que aponto para esses blocos locais salvos.
-void virtualize_handles(struct starpu_block_interface* handles, struct starpu_block_interface** v_handles, size_t amount){
-    for(size_t vi = 0; vi < amount; vi++){
-        v_handles[vi] = &handles[vi];
+
+// runs rtm_kernel on the block (i, j, k), reading the levels t - 1 (pc, qc) and t - 2 (pp, qp) from the volume
+// arrays: the slabs it receives are packed from the neighbor blocks, like the update tasks of main do.
+// the level t of the block is written into p_t and q_t
+static void run_kernel_on_block(size_t i, size_t j, size_t k, const rtm_args_t* args,
+    const FP* pc, const FP* pp, const FP* qc, const FP* qp, FP* p_t, FP* q_t
+){
+    const size_t block_bytes = g.block_size * sizeof(FP);
+    const uint32_t neighbor_mask = args->neighbor_mask;
+    const int neighbor_count = __builtin_popcount(neighbor_mask);
+
+    FP* p_t1 = malloc(block_bytes); FP* q_t1 = malloc(block_bytes);
+    FP* p_t2 = malloc(block_bytes); FP* q_t2 = malloc(block_bytes);
+    FP* neighbor_p = malloc(block_bytes); FP* neighbor_q = malloc(block_bytes);
+    cr_assert(p_t1 && q_t1 && p_t2 && q_t2 && neighbor_p && neighbor_q);
+    extract_block(pc, i, j, k, p_t1);
+    extract_block(qc, i, j, k, q_t1);
+    extract_block(pp, i, j, k, p_t2);
+    extract_block(qp, i, j, k, q_t2);
+
+    const uvec3_t scratch_dims = {
+        g.block_sizes.x + 2 * g.halo_widths.x, g.block_sizes.y + 2 * g.halo_widths.y, g.block_sizes.z + 2 * g.halo_widths.z,
+    };
+    FP* scratch = malloc(2 * uvec3_prod(scratch_dims) * sizeof(FP));
+    cr_assert(ne(ptr, scratch, NULL));
+
+    struct starpu_block_interface blocks[6] = {
+        ASBLK(p_t1), ASBLK(q_t1), ASBLK(p_t2), ASBLK(q_t2), ASBLK(p_t), ASBLK(q_t),
+    };
+    struct starpu_tensor_interface medium = ASTENSOR(g_medium[block_idx(i, j, k)],
+        g.block_sizes.x, g.block_sizes.y, g.block_sizes.z, MEDIUM_FIELD_COUNT);
+    struct starpu_tensor_interface scratch_interface = ASTENSOR(scratch, scratch_dims.x, scratch_dims.y, scratch_dims.z, 2);
+    struct starpu_tensor_interface received[NEIGHBOR_COUNT], sent[NEIGHBOR_COUNT];
+    FP* slab_buffers[2 * NEIGHBOR_COUNT];
+
+    void* descr[64];
+    descr[RTM_HANDLE_POS_MEDIUM] = &medium;
+    descr[RTM_HANDLE_POS_P_T1] = &blocks[0];
+    descr[RTM_HANDLE_POS_Q_T1] = &blocks[1];
+    descr[RTM_HANDLE_POS_P_T2] = &blocks[2];
+    descr[RTM_HANDLE_POS_Q_T2] = &blocks[3];
+    descr[RTM_HANDLE_POS_SCRATCH] = &scratch_interface;
+    descr[RTM_HANDLE_POS_P_T] = &blocks[4];
+    descr[RTM_HANDLE_POS_Q_T] = &blocks[5];
+
+    int slab_position = 0;
+    for(int table_index = 0; table_index < NEIGHBOR_COUNT; table_index++){
+        if(!((neighbor_mask >> table_index) & 1)) continue;
+        const ivec3_t offset = NEIGHBOR_OFFSETS[table_index];
+        const uvec3_t dims = slab_dims(offset);
+        FP* received_slab = malloc(2 * uvec3_prod(dims) * sizeof(FP));
+        FP* sent_slab = malloc(2 * uvec3_prod(dims) * sizeof(FP));
+        cr_assert(received_slab && sent_slab);
+        slab_buffers[2 * slab_position] = received_slab;
+        slab_buffers[2 * slab_position + 1] = sent_slab;
+
+        // the neighbor at `offset` sends the slab towards the opposite offset
+        extract_block(pc, i + offset.x, j + offset.y, k + offset.z, neighbor_p);
+        extract_block(qc, i + offset.x, j + offset.y, k + offset.z, neighbor_q);
+        halo_pack_slab(neighbor_p, neighbor_q, g.block_sizes.x, g.block_sizes.x * g.block_sizes.y,
+            NEIGHBOR_OFFSETS[halo_opposite_neighbor(table_index)], received_slab, dims.x, dims.x * dims.y, uvec3_prod(dims));
+
+        received[slab_position] = ASTENSOR(received_slab, dims.x, dims.y, dims.z, 2);
+        sent[slab_position] = ASTENSOR(sent_slab, dims.x, dims.y, dims.z, 2);
+        descr[rtm_handle_pos_received_slab(slab_position)] = &received[slab_position];
+        descr[rtm_handle_pos_sent_slab(neighbor_count, slab_position)] = &sent[slab_position];
+        slab_position++;
+    }
+
+    rtm_kernel(descr, (void*) args);
+
+    for(int slab = 0; slab < 2 * neighbor_count; slab++) free(slab_buffers[slab]);
+    free(scratch);
+    free(p_t1); free(q_t1); free(p_t2); free(q_t2); free(neighbor_p); free(neighbor_q);
+}
+
+// arguments of the update of block (i, j, k), without the source
+static rtm_args_t block_args(size_t i, size_t j, size_t k, FP dt, FP dx, FP dy, FP dz){
+    #define AS_BORDER(v) ((v) ? BORDER_WIDTH : 0)
+    const rtm_args_t args = {
+        .x_start = AS_BORDER(i == 0), .x_end = g.block_sizes.x - AS_BORDER(i == g.num_blocks.x - 1),
+        .y_start = AS_BORDER(j == 0), .y_end = g.block_sizes.y - AS_BORDER(j == g.num_blocks.y - 1),
+        .z_start = AS_BORDER(k == 0), .z_end = g.block_sizes.z - AS_BORDER(k == g.num_blocks.z - 1),
+        .dx = dx, .dy = dy, .dz = dz, .dt = dt,
+        .neighbor_mask = halo_neighbor_mask(i, j, k),
+    };
+    #undef AS_BORDER
+    return args;
+}
+
+// computes the block (i, j, k) with the fletcher-base implementation, in place in pp and qp
+static void base_on_block(size_t i, size_t j, size_t k, const rtm_args_t* args, FP dt, FP dx, FP dy, FP dz){
+    for(size_t z = args->z_start; z < args->z_end; z++)
+    for(size_t y = args->y_start; y < args->y_end; y++)
+    for(size_t x = args->x_start; x < args->x_end; x++){
+        base_computation_implementation(dt, dx, dy, dz,
+            local_to_volume_idx(x, y, z, i, j, k), block_idx(i, j, k), local_idx(x, y, z),
+            g_volume_matrix_pc, g_volume_matrix_pp, g_volume_matrix_qc, g_volume_matrix_qp
+        );
     }
 }
 
+// compares the computed points of the block (i, j, k) with the volume arrays pp and qp
+static void expect_block_equals_base(size_t i, size_t j, size_t k, const rtm_args_t* args, const FP* p_t, const FP* q_t){
+    for(size_t z = args->z_start; z < args->z_end; z++)
+    for(size_t y = args->y_start; y < args->y_end; y++)
+    for(size_t x = args->x_start; x < args->x_end; x++){
+        const size_t vol_i = local_to_volume_idx(x, y, z, i, j, k);
+        cr_expect(epsilon_eq(flt, g_volume_matrix_pp[vol_i], p_t[local_idx(x, y, z)], KERNEL_EPSILON),
+            "p diff at block (%ld, %ld, %ld) point (%ld, %ld, %ld)", i, j, k, x, y, z);
+        cr_expect(epsilon_eq(flt, g_volume_matrix_qp[vol_i], q_t[local_idx(x, y, z)], KERNEL_EPSILON),
+            "q diff at block (%ld, %ld, %ld) point (%ld, %ld, %ld)", i, j, k, x, y, z);
+    }
+}
+
+// one step from random levels t - 1 and t - 2, so every term of the stencil and every halo cell is used
 Test(fletcher_kernel, compute_one_step) {
-    //insert source
     const FP dt = 0.001f;
     const FP dx = 12.5f, dy = 12.5f, dz = 12.5f;
-    const FP source = medium_source_value(dt, 0);
 
-    const size_t volume_center_idx = volume_idx(g_volume_width / 2, g_volume_width / 2, g_volume_width / 2);
-    const size_t center_cube_idx = volume_to_block_idx(volume_center_idx) + block_idx(1, 1, 1);
-    const size_t source_local_cube_idx = volume_to_cube_idx(volume_center_idx);
-
-    cr_log_info("indice de propagação da onda é %ld", volume_center_idx);
-    
-    g_volume_matrix_pc[volume_center_idx] += source;
-    g_volume_matrix_qc[volume_center_idx] += source;
-
-    struct starpu_block_interface source_handles[2];
-    struct starpu_block_interface* v_source_handles[2];
-    source_handles[0] = ASBLK(g_segment_matrix_p[1][center_cube_idx]);
-    source_handles[1] = ASBLK(g_segment_matrix_q[1][center_cube_idx]);
-    virtualize_handles(source_handles, v_source_handles, 2);
-
-    //use the source kernel
-    struct perturb_args* p_args;
-    cr_assert(not(make_perturb_args(&p_args, source_local_cube_idx, source, 0)));
-    perturbation_kernel((void**) v_source_handles, p_args);
-    free(p_args);
-    
-    for(size_t k = 1; k < g_width_in_cubes + 1; k++)
-    for(size_t j = 1; j < g_width_in_cubes + 1; j++)
-    for(size_t i = 1; i < g_width_in_cubes + 1; i++){
-
-        struct starpu_block_interface handles[52];
-        struct starpu_block_interface* virtual_handles[52];
-        build_handles(handles, i, j, k);
-        virtualize_handles(handles, virtual_handles, 52);
-
-        const size_t start_z = k == 1 ? BORDER_WIDTH : 0;
-        const size_t end_z = g_cube_width - (k == g_width_in_cubes ? BORDER_WIDTH : 0);
-        const size_t start_y = j == 1 ? BORDER_WIDTH : 0;
-        const size_t end_y = g_cube_width - (j == g_width_in_cubes ? BORDER_WIDTH : 0);
-        const size_t start_x = i == 1 ? BORDER_WIDTH : 0;
-        const size_t end_x = g_cube_width - (i == g_width_in_cubes ? BORDER_WIDTH : 0);
-        
-        struct rtm_args* rtm_args;
-        cr_assert(not(make_rtm_args(&rtm_args, 
-            start_x, end_x,
-            start_y, end_y,
-            start_z, end_z,
-            dx, dy, dz, dt)));
-        
-        rtm_kernel((void**) virtual_handles, (void*) rtm_args);
-        free(rtm_args);
-
-        for(size_t z = 0; z < g_cube_width; z++)
-        for(size_t y = 0; y < g_cube_width; y++)
-        for(size_t x = 0; x < g_cube_width; x++){
-
-            if((z < start_z || z >= end_z) || 
-               (y < start_y || y >= end_y) || 
-               (x < start_x || x >= end_x)){
-                continue;
-            }
-            const size_t vol_i = block_cube_to_volume_idx(x, y, z, i - 1, j - 1, k - 1);
-            const size_t block_i = block_idx(i - 1, j - 1, k - 1);
-            const size_t block_with_offset_i = block_idx(i, j, k);
-            const size_t cube_i = cube_idx(x, y, z);
-
-            base_computation_implementation(dt, dx, dy, dz, 
-                vol_i, block_i, cube_i, 
-                g_volume_matrix_pc, g_volume_matrix_pp, g_volume_matrix_qc, g_volume_matrix_qp
-            );
-
-            cr_expect(epsilon_eq(flt, g_volume_matrix_pp[vol_i], g_segment_matrix_p[0][block_with_offset_i][cube_i], EPSILON), 
-            "diff at (i: %ld, j: %ld, k: %ld) (x: %ld, y: %ld, z: %ld)", i - 1, j - 1, k - 1, x, y, z);
-        }
+    for(size_t point = 0; point < uvec3_prod(g.volume_dims); point++){
+        g_volume_matrix_pc[point] = FP_RAND() - FP_LIT(0.5);
+        g_volume_matrix_pp[point] = FP_RAND() - FP_LIT(0.5);
+        g_volume_matrix_qc[point] = FP_RAND() - FP_LIT(0.5);
+        g_volume_matrix_qp[point] = FP_RAND() - FP_LIT(0.5);
     }
+
+    FP* p_t = malloc(g.block_size * sizeof(FP));
+    FP* q_t = malloc(g.block_size * sizeof(FP));
+
+    for(size_t k = 0; k < g.num_blocks.z; k++)
+    for(size_t j = 0; j < g.num_blocks.y; j++)
+    for(size_t i = 0; i < g.num_blocks.x; i++){
+        const rtm_args_t args = block_args(i, j, k, dt, dx, dy, dz);
+        run_kernel_on_block(i, j, k, &args, g_volume_matrix_pc, g_volume_matrix_pp, g_volume_matrix_qc, g_volume_matrix_qp, p_t, q_t);
+        // only the block (i, j, k) of pp and qp is overwritten, the next blocks read pc, qc and their own part of pp, qp
+        base_on_block(i, j, k, &args, dt, dx, dy, dz);
+        expect_block_equals_base(i, j, k, &args, p_t, q_t);
+    }
+
+    free(p_t);
+    free(q_t);
 }
 
-
+// several steps from the source alone, the update of the block of the source adds it to the level t
 Test(fletcher_kernel, compute_many_step) {
-    const size_t amount_of_steps = 10;
-    //insert source
+    const int64_t amount_of_steps = 10;
     const FP dt = 0.001f;
     const FP dx = 12.5f, dy = 12.5f, dz = 12.5f;
 
-    const size_t volume_center_idx = volume_idx(g_volume_width / 2, g_volume_width / 2, g_volume_width / 2);
-    const size_t center_cube_idx = volume_to_block_idx(volume_center_idx) + block_idx(1, 1, 1);
-    const size_t source_local_cube_idx = volume_to_cube_idx(volume_center_idx);
+    const size_t volume_center_idx = volume_idx(g.volume_dims.x / 2, g.volume_dims.y / 2, g.volume_dims.z / 2);
+    const size_t source_block = volume_to_block_idx(volume_center_idx);
+    const uvec3_t source_point = unindex(volume_to_local_idx(volume_center_idx), g.block_sizes.x, g.block_sizes.y);
 
-    cr_log_info("indice de propagação da onda é %ld", volume_center_idx);
-    for(size_t it = 0; it < amount_of_steps; it++){
+    // the level 0 holds the source value of t = 0
+    g_volume_matrix_pc[volume_center_idx] += medium_source_value(dt, 0);
+    g_volume_matrix_qc[volume_center_idx] += medium_source_value(dt, 0);
 
-        /* ----------- INSERT SOURCE -----------*/
-        const FP source = medium_source_value(dt, it);
-        g_volume_matrix_pc[volume_center_idx] += source;
-        g_volume_matrix_qc[volume_center_idx] += source;
+    FP* p_t = malloc(g.block_size * sizeof(FP));
+    FP* q_t = malloc(g.block_size * sizeof(FP));
 
-        struct starpu_block_interface source_handles[2];
-        struct starpu_block_interface* v_source_handles[2];
-        source_handles[0] = ASBLK(g_segment_matrix_p[1][center_cube_idx]);
-        source_handles[1] = ASBLK(g_segment_matrix_q[1][center_cube_idx]);
-        virtualize_handles(source_handles, v_source_handles, 2);
+    for(int64_t t = 1; t <= amount_of_steps; t++){
+        const FP source = medium_source_value(dt, t);
 
-        //use the source kernel
-        struct perturb_args* p_args;
-        cr_assert(not(make_perturb_args(&p_args, source_local_cube_idx, source, it)));
-        perturbation_kernel((void**) v_source_handles, p_args);
-        free(p_args);
-        
-        /* ----------- PROPAGATE -----------*/
-        for(size_t k = 1; k < g_width_in_cubes + 1; k++)
-        for(size_t j = 1; j < g_width_in_cubes + 1; j++)
-        for(size_t i = 1; i < g_width_in_cubes + 1; i++){
+        for(size_t k = 0; k < g.num_blocks.z; k++)
+        for(size_t j = 0; j < g.num_blocks.y; j++)
+        for(size_t i = 0; i < g.num_blocks.x; i++){
+            rtm_args_t args = block_args(i, j, k, dt, dx, dy, dz);
+            const int has_source = block_idx(i, j, k) == source_block;
+            args.has_source = has_source;
+            args.source_x = source_point.x;
+            args.source_y = source_point.y;
+            args.source_z = source_point.z;
+            args.source_value = source;
+            args.t = t;
 
-            struct starpu_block_interface handles[52];
-            struct starpu_block_interface* virtual_handles[52];
-            build_handles(handles, i, j, k);
-            virtualize_handles(handles, virtual_handles, 52);
-
-            const size_t start_z = k == 1 ? BORDER_WIDTH : 0;
-            const size_t end_z = g_cube_width - (k == g_width_in_cubes ? BORDER_WIDTH : 0);
-            const size_t start_y = j == 1 ? BORDER_WIDTH : 0;
-            const size_t end_y = g_cube_width - (j == g_width_in_cubes ? BORDER_WIDTH : 0);
-            const size_t start_x = i == 1 ? BORDER_WIDTH : 0;
-            const size_t end_x = g_cube_width - (i == g_width_in_cubes ? BORDER_WIDTH : 0);
-            
-            struct rtm_args* rtm_args;
-            cr_assert(not(make_rtm_args(&rtm_args, 
-                start_x, end_x,
-                start_y, end_y,
-                start_z, end_z,
-                dx, dy, dz, dt)));
-            
-            rtm_kernel((void**) virtual_handles, (void*) rtm_args);
-            free(rtm_args);
-
-            for(size_t z = 0; z < g_cube_width; z++)
-            for(size_t y = 0; y < g_cube_width; y++)
-            for(size_t x = 0; x < g_cube_width; x++){
-
-                if((z < start_z || z >= end_z) || 
-                (y < start_y || y >= end_y) || 
-                (x < start_x || x >= end_x)){
-                    continue;
-                }
-                const size_t vol_i = block_cube_to_volume_idx(x, y, z, i - 1, j - 1, k - 1);
-                const size_t block_i = block_idx(i - 1, j - 1, k - 1);
-                const size_t block_with_offset_i = block_idx(i, j, k);
-                const size_t cube_i = cube_idx(x, y, z);
-
-                base_computation_implementation(dt, dx, dy, dz, 
-                    vol_i, block_i, cube_i, 
-                    g_volume_matrix_pc, g_volume_matrix_pp, g_volume_matrix_qc, g_volume_matrix_qp
-                );
-
-                cr_expect(epsilon_eq(flt, g_volume_matrix_pp[vol_i], g_segment_matrix_p[0][block_with_offset_i][cube_i], EPSILON), 
-                "diff at (i: %ld, j: %ld, k: %ld) (x: %ld, y: %ld, z: %ld)", i - 1, j - 1, k - 1, x, y, z);
+            run_kernel_on_block(i, j, k, &args, g_volume_matrix_pc, g_volume_matrix_pp, g_volume_matrix_qc, g_volume_matrix_qp, p_t, q_t);
+            base_on_block(i, j, k, &args, dt, dx, dy, dz);
+            if(has_source){
+                g_volume_matrix_pp[volume_center_idx] += source;
+                g_volume_matrix_qp[volume_center_idx] += source;
             }
+            expect_block_equals_base(i, j, k, &args, p_t, q_t);
         }
-        /* ----------- SWAP BUFFERS -----------*/
 
-        // swap the global one
+        // the level t becomes the level t - 1
         FP* tmp = g_volume_matrix_pc;
         g_volume_matrix_pc = g_volume_matrix_pp;
         g_volume_matrix_pp = tmp;
@@ -494,17 +453,8 @@ Test(fletcher_kernel, compute_many_step) {
         tmp = g_volume_matrix_qc;
         g_volume_matrix_qc = g_volume_matrix_qp;
         g_volume_matrix_qp = tmp;
-
-        //rotate the ones around
-        FP** segtmp = g_segment_matrix_p[2];
-        g_segment_matrix_p[2] = g_segment_matrix_p[1];
-        g_segment_matrix_p[1] = g_segment_matrix_p[0];
-        g_segment_matrix_p[0] = segtmp;
-
-        segtmp = g_segment_matrix_q[2];
-        g_segment_matrix_q[2] = g_segment_matrix_q[1];
-        g_segment_matrix_q[1] = g_segment_matrix_q[0];
-        g_segment_matrix_q[0] = segtmp;
-
     }
+
+    free(p_t);
+    free(q_t);
 }

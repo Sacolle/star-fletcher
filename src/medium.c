@@ -6,7 +6,9 @@
 #include <stdlib.h>
 
 #include "argparse.h"
-#include "macros.h"
+#include "kernel.h"
+#include "global.h"
+#include "indexing.h"
 
 //return != 0 if err
 err_t str_to_medium(const char *str, enum Form* form){
@@ -102,12 +104,13 @@ static inline bool inbounds(size_t val, size_t lb, size_t ub){
     return val >= lb && val <= ub;
 }
 
-FP max_speed_in_cube_segment(FP *v, const size_t start_idx, const size_t end_idx){
+// max value of v in the box [start, end) of the volume
+FP max_speed_in_cube_segment(FP *v, const uvec3_t start, const uvec3_t end){
     FP max_speed = FP_LIT(0.0);
 
-    for(size_t z = start_idx; z < end_idx; z++){
-        for(size_t y = start_idx; y < end_idx; y++){
-            for(size_t x = start_idx; x < end_idx; x++){
+    for(size_t z = start.z; z < end.z; z++){
+        for(size_t y = start.y; y < end.y; y++){
+            for(size_t x = start.x; x < end.x; x++){
                 const size_t i = volume_idx(x, y, z);
                 max_speed = FP_MAX(v[i], max_speed);
             }
@@ -120,33 +123,33 @@ void medium_random_velocity_boundary(
     const size_t border_width, const size_t absorb_width,
     FP *restrict vpz, FP *restrict vsv
 ){
-    extern size_t g_volume_width;
+    const uvec3_t volume_dims = g.volume_dims;
     const size_t outer_width = border_width + absorb_width;
 
-    const size_t inside_start = outer_width;
-    const size_t inside_end = g_volume_width - outer_width;
+    const uvec3_t inside_start = {outer_width, outer_width, outer_width};
+    const uvec3_t inside_end = {volume_dims.x - outer_width, volume_dims.y - outer_width, volume_dims.z - outer_width};
 
     const FP max_speed_p = max_speed_in_cube_segment(vpz, inside_start, inside_end);
     const FP max_speed_s = max_speed_in_cube_segment(vsv, inside_start, inside_end);
 
-    for(size_t z = 0; z < g_volume_width; z++){
-        for(size_t y = 0; y < g_volume_width; y++){
-            for(size_t x = 0; x < g_volume_width; x++){
+    for(size_t z = 0; z < volume_dims.z; z++){
+        for(size_t y = 0; y < volume_dims.y; y++){
+            for(size_t x = 0; x < volume_dims.x; x++){
 
                 const size_t i = volume_idx(x, y, z);
 
                 // do nothing inside input grid
-                if(inbounds(z, inside_start, inside_end - 1) &&
-                   inbounds(y, inside_start, inside_end - 1) && 
-                   inbounds(x, inside_start, inside_end - 1)){
+                if(inbounds(z, inside_start.z, inside_end.z - 1) &&
+                   inbounds(y, inside_start.y, inside_end.y - 1) && 
+                   inbounds(x, inside_start.x, inside_end.x - 1)){
                     continue;
                 }
 
                 // null speed at border
                 // which is a point not within the bounds defided by the aborsb - inner - absobr
-                if(!(inbounds(z, border_width, g_volume_width - border_width - 1) &&
-                     inbounds(y, border_width, g_volume_width - border_width - 1) &&
-                     inbounds(x, border_width, g_volume_width - border_width - 1))
+                if(!(inbounds(z, border_width, volume_dims.z - border_width - 1) &&
+                     inbounds(y, border_width, volume_dims.y - border_width - 1) &&
+                     inbounds(x, border_width, volume_dims.x - border_width - 1))
                 ){
                     vpz[i] = FP_LIT(0.0);
                     vsv[i] = FP_LIT(0.0);
@@ -159,15 +162,19 @@ void medium_random_velocity_boundary(
                 // inner point to this absorpsion zone
                 #define DIR_AMOUNT 3
                 size_t ivel[DIR_AMOUNT] = {x, y, z};
+                const size_t dir_start[DIR_AMOUNT] = {inside_start.x, inside_start.y, inside_start.z};
+                const size_t dir_end[DIR_AMOUNT] = {inside_end.x, inside_end.y, inside_end.z};
                 FP dist = FP_LIT(0.0);
                 for(size_t dir_i = 0; dir_i < DIR_AMOUNT; dir_i++){
                     const size_t dir = ivel[dir_i];
-                    if (dir >= inside_end){ 
-                        dist = FP_MAX(dist, (FP)(dir - inside_end + 1 )); 
-                        ivel[dir_i] = inside_end - 1; 
-                    }else if (dir < inside_start){ 
-                        dist = FP_MAX(dist, (FP)(inside_start - dir)); 
-                        ivel[dir_i] = inside_start; 
+                    const size_t start = dir_start[dir_i];
+                    const size_t end = dir_end[dir_i];
+                    if (dir >= end){ 
+                        dist = FP_MAX(dist, (FP)(dir - end + 1 )); 
+                        ivel[dir_i] = end - 1; 
+                    }else if (dir < start){ 
+                        dist = FP_MAX(dist, (FP)(start - dir)); 
+                        ivel[dir_i] = start; 
                     }
                 }
 
@@ -193,25 +200,23 @@ void medium_random_velocity_boundary(
 void medium_calc_intermediary_values(
     const FP* vpz, const FP* vsv, const FP* epsilon,
     const FP* delta, const FP* phi, const FP* theta,
-    FP **restrict ch1dxx, FP **restrict ch1dyy, FP **restrict ch1dzz, 
-    FP **restrict ch1dxy, FP **restrict ch1dyz, FP **restrict ch1dxz, 
-    FP **restrict v2px, FP **restrict v2pz, FP **restrict v2sz, FP **restrict v2pn
+    FP **restrict medium
 ){
-    extern size_t g_width_in_cubes;
-    extern size_t g_cube_width;
+    // distance between two fields of the medium of a block
+    const size_t ldt = g.block_size;
 
-
-    for(size_t k = 0; k < g_width_in_cubes; k++){
-        for(size_t j = 0; j < g_width_in_cubes; j++){
-            for(size_t i = 0; i < g_width_in_cubes; i++){
+    for(size_t k = 0; k < g.num_blocks.z; k++){
+        for(size_t j = 0; j < g.num_blocks.y; j++){
+            for(size_t i = 0; i < g.num_blocks.x; i++){
                 //index the block
                 const size_t b_i = block_idx(i, j , k);
+                FP *const block_medium = medium[b_i];
 
-                for(size_t z = 0; z < g_cube_width; z++){
-                    for(size_t y = 0; y < g_cube_width; y++){
-                        for(size_t x = 0; x < g_cube_width; x++){
-                            const size_t c_i = cube_idx(x, y, z);
-                            const size_t vol_i = volume_idx(x + i * g_cube_width, y + j * g_cube_width, z + k * g_cube_width);
+                for(size_t z = 0; z < g.block_sizes.z; z++){
+                    for(size_t y = 0; y < g.block_sizes.y; y++){
+                        for(size_t x = 0; x < g.block_sizes.x; x++){
+                            const size_t c_i = local_idx(x, y, z);
+                            const size_t vol_i = local_to_volume_idx(x, y, z, i, j, k);
 
                             // changing the data type TO be the same as in the original
                             const FP sinTheta = sin(theta[vol_i]);
@@ -221,19 +226,19 @@ void medium_calc_intermediary_values(
                             const FP cosPhi = cos(phi[vol_i]);
                             const FP sin2Phi = sin(2.0 * phi[vol_i]);
 
-                            ch1dxx[b_i][c_i] = sinTheta * sinTheta * cosPhi * cosPhi;
-                            ch1dyy[b_i][c_i] = sinTheta * sinTheta * sinPhi * sinPhi;
-                            ch1dzz[b_i][c_i] = cosTheta * cosTheta;
-                            ch1dxy[b_i][c_i] = sinTheta * sinTheta * sin2Phi;
-                            ch1dyz[b_i][c_i] = sin2Theta * sinPhi;
-                            ch1dxz[b_i][c_i] = sin2Theta * cosPhi;
+                            block_medium[MEDIUM_CH1DXX * ldt + c_i] = sinTheta * sinTheta * cosPhi * cosPhi;
+                            block_medium[MEDIUM_CH1DYY * ldt + c_i] = sinTheta * sinTheta * sinPhi * sinPhi;
+                            block_medium[MEDIUM_CH1DZZ * ldt + c_i] = cosTheta * cosTheta;
+                            block_medium[MEDIUM_CH1DXY * ldt + c_i] = sinTheta * sinTheta * sin2Phi;
+                            block_medium[MEDIUM_CH1DYZ * ldt + c_i] = sin2Theta * sinPhi;
+                            block_medium[MEDIUM_CH1DXZ * ldt + c_i] = sin2Theta * cosPhi;
 
                             // coeficients of H1 and H2 at PDEs
                             const FP l_v2pz = vpz[vol_i] * vpz[vol_i];
-                            v2sz[b_i][c_i] = vsv[vol_i] * vsv[vol_i];
-                            v2pz[b_i][c_i] = l_v2pz;
-                            v2px[b_i][c_i] = l_v2pz * (1.0 + 2.0 * epsilon[vol_i]);
-                            v2pn[b_i][c_i] = l_v2pz * (1.0 + 2.0 * delta[vol_i]);
+                            block_medium[MEDIUM_V2SZ * ldt + c_i] = vsv[vol_i] * vsv[vol_i];
+                            block_medium[MEDIUM_V2PZ * ldt + c_i] = l_v2pz;
+                            block_medium[MEDIUM_V2PX * ldt + c_i] = l_v2pz * (1.0 + 2.0 * epsilon[vol_i]);
+                            block_medium[MEDIUM_V2PN * ldt + c_i] = l_v2pz * (1.0 + 2.0 * delta[vol_i]);
                         }
                     }
                 }
