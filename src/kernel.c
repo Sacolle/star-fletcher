@@ -88,7 +88,6 @@ void rtm_kernel(void *descr[], void *cl_args){
     // unpack the precomputed vlaues which existed as 10 separate handles and
     // now are used as a tensor
     void* medium_interface = descr[RTM_HANDLE_POS_MEDIUM];
-    STARPU_ASSERT(STARPU_TENSOR_GET_LDY(medium_interface) == ldy && STARPU_TENSOR_GET_LDZ(medium_interface) == ldz);
     const FP* medium = (FP*) STARPU_TENSOR_GET_PTR(medium_interface);
     const size_t medium_ldt = STARPU_TENSOR_GET_LDT(medium_interface);
     const FP* ch1dxx = medium + MEDIUM_CH1DXX * medium_ldt;

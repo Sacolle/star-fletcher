@@ -3,6 +3,7 @@
 #include <stdbool.h>
 
 #include <stdio.h>
+#include <math.h>
 
 #define ERR_NAME_IMPL
 #include "err.h"
@@ -96,11 +97,6 @@ static struct starpu_perfmodel rtm_perf_model = {
     .symbol = "rtm_perf_model"
 };
 
-static struct starpu_perfmodel pack_perf_model = {
-    .type = STARPU_HISTORY_BASED,
-    .symbol = "pack_perf_model"
-};
-
 #ifdef CUDA_BACKEND
 extern void rtm_kernel_cuda(void *descr[], void *cl_args);
 extern void pack_kernel_cuda(void *descr[], void *cl_args);
@@ -140,7 +136,7 @@ struct starpu_codelet pack_codelet = {
 #endif
     .where = WHERE,
     .nbuffers = STARPU_VARIABLE_NBUFFERS,
-    .model = &pack_perf_model
+    // no perf model: it runs once per block per execution, too few times to ever be calibrated
 };
 
 // sets the buffer at `position` of a task whose codelet has STARPU_VARIABLE_NBUFFERS
@@ -341,7 +337,10 @@ int main(int argc, char **argv){
         g.block_sizes.x, g.block_sizes.y, g.block_sizes.z);
 #endif
 
-    const int64_t st = (int64_t) FP_CEIL(tmax / dt);
+    // amount of steps to reach tmax. a quotient within float rounding of an integer (e.g. 0.0003 / 0.0001 = 3.0000002)
+    // is that integer, otherwise it is rounded up so the simulation covers tmax
+    const double steps_to_tmax = (double) tmax / (double) dt;
+    const int64_t st = fabs(steps_to_tmax - round(steps_to_tmax)) < 1e-4 ? llround(steps_to_tmax) : (int64_t) ceil(steps_to_tmax);
 
     // the point in the global volume that the source is inserted
     const size_t volume_propagation_idx = volume_idx(g.volume_dims.x / 2, g.volume_dims.y / 2, g.volume_dims.z / 2);
@@ -359,6 +358,9 @@ int main(int argc, char **argv){
         "Writing the output needs at least one CPU worker: set STARPU_NCPU >= 1 or ENABLE_IO=0.\n"
         "To run every computation on the GPU, build with NO_CPU_KERNEL=1 and run with STARPU_NCPU=1.\n");
 
+    // amount of steps between two saved moments, counted in steps so float rounding can not skip a moment
+    int64_t steps_per_output = 1;
+
     //init the IO here, only if it will be used
     if(enable_io){
         printf("bin filename %s\n", bin_filename);
@@ -367,8 +369,12 @@ int main(int argc, char **argv){
         TRY(g.dt_output > FP_LIT(0.0) ? 0 : ME_IMPROPER_INPUT,
             "Output time must be greater than 0 when IO is enabled.\n");
 
-        // amount of iterations the program will save the block
-        const size_t total_saved_moments = (size_t) FP_CEIL(tmax / g.dt_output) + 1;
+        // the output time is rounded to a whole number of steps, at least one
+        steps_per_output = llround((double) g.dt_output / (double) dt);
+        if(steps_per_output < 1) steps_per_output = 1;
+
+        // amount of moments the program will save: the level 0, then one every steps_per_output steps
+        const size_t total_saved_moments = (size_t) (st / steps_per_output) + 1;
         TRY(io_state_init(bin_filename, 4096, total_saved_moments, uvec3_prod(g.volume_dims)));
     }
 
@@ -603,16 +609,9 @@ int main(int argc, char **argv){
             TRY(starpu_task_submit(task));
         }
 
-        // TODO: float rounding in this comparison can skip the last output: for TTI 32 32 32 8 12.5 12.5 12.5 0.0001 0.005 4 0.001
-        //       the file has room for 6 moments (total_saved_moments) but only 5 are written, so the last one stays zeros.
-        //       compare integer step counts instead (e.g. t >= n_out * round(g.dt_output / dt))
-        // only output the block when simulation time overtakes the min time to generate output
-        const FP simulation_time = t * dt;
-        const FP output_time = n_out * g.dt_output;
-        if(simulation_time >= output_time){
-            if(enable_io){
-                TRY(write_wave(&n_out, p_wave_iter[0]));
-            }
+        // save the level every steps_per_output steps
+        if(enable_io && t % steps_per_output == 0){
+            TRY(write_wave(&n_out, p_wave_iter[0]));
         }
 
         // the level t - 2 and the slabs of the level t - 1 were only read by the updates just submitted
@@ -693,12 +692,12 @@ int main(int argc, char **argv){
         fprintf(rsf_header, "n1=%u\n", g.volume_dims.x /*sx*/);
         fprintf(rsf_header, "n2=%u\n", g.volume_dims.y /*sy*/);
         fprintf(rsf_header, "n3=%u\n", g.volume_dims.z /*sz*/);
-        fprintf(rsf_header, "n4=%ld\n", n_out); // TODO: validar n_out
+        fprintf(rsf_header, "n4=%ld\n", n_out);
         fprintf(rsf_header, "d1=%f\n", dx);
         fprintf(rsf_header, "d2=%f\n", dy);
         fprintf(rsf_header, "d3=%f\n", dz);
-        // TODO: d4 is the time between two saved moments, which is g.dt_output (or the actual step between dumps), not dt
-        fprintf(rsf_header, "d4=%f\n", dt);
+        // the time between two saved moments
+        fprintf(rsf_header, "d4=%f\n", steps_per_output * dt);
         fprintf(rsf_header, "seg=%u\n", g.num_blocks.x);
 
         fclose(rsf_header);

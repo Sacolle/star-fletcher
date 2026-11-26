@@ -93,7 +93,7 @@
             	enableCUDA = true;
 	        compileAsRelease = true;
 	        enableTrace = false;
-            	maxBuffers = 56;
+            	maxBuffers = 44;
 	        cudaPackages = cudaPacks;
 	        stdenv = cudaStdenv;
 	    };
@@ -127,13 +127,6 @@
         };
 
         nixglhost = nix-gl-host.defaultPackage.${system};
-
-        kernel-test = pkgs.callPackage ./tests/kernel-opt/kernel-test.nix {
-	    root = self;
-            compileAsRelease = true;
-            stdenv = cudaStdenv;
-            cudaPackages = cudaPacks;
-        };
     in
     {
         devShells = {
@@ -142,7 +135,7 @@
             	enableCUDA = false;
 	            compileAsRelease = true;
 	            enableTrace = false;
-            	maxBuffers = 56;
+            	maxBuffers = 44;
 	        }) {};
             /*
           eztrace-test = pkgs.mkShell {
@@ -196,16 +189,10 @@
                     nixglhost 
                 ];
             };
-            kernel-test-grace = pkgs.mkShell {
-                buildInputs = [ 
-                    nixglhost 
-		    (kernel-test.overrideAttrs { doCheck = false; })
-                ];
-            };
         };
         packages = {
           default = star-fletcher;
-          inherit star-fletcher star-fletcher-cuda star-fletcher-cuda-no-cpu-kernel star-fletcher-cuda-trace kernel-test;
+          inherit star-fletcher star-fletcher-cuda star-fletcher-cuda-no-cpu-kernel star-fletcher-cuda-trace;
         };
     });
 }

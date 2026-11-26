@@ -26,7 +26,7 @@ let
         inherit cudaPackages;
         inherit stdenv;
         inherit enableTrace enableCUDA compileAsRelease;
-        maxBuffers = 56;
+        maxBuffers = 44;
     };
 in
 stdenv.mkDerivation {
